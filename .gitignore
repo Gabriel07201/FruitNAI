@@ -1,0 +1,6 @@
+data/raw_videos/**
+data/frames_raw/**
+data/labels/**
+data/artifacts/**
+
+__pycache__/
