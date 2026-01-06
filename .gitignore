@@ -2,5 +2,6 @@ data/raw_videos/**
 data/frames_raw/**
 data/labels/**
 data/artifacts/**
+datasets/**
 
 __pycache__/
