@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 import json
 
 from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import math
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from torchvision import transforms as tv_transforms
 
 
 
@@ -78,7 +83,7 @@ class ManifestItem:
     split: Optional[str] = None
 
 
-class ManifestDataset:
+class ManifestDataset(Dataset):
     """
     Lê artifacts/dataset_index.jsonl e fornece amostras no formato:
       {
@@ -94,11 +99,14 @@ class ManifestDataset:
         split: str,
         classes_path: str | Path,
         yolo_parser: Optional[YoloTxtParser] = None,
+        transform: Optional[Callable[..., Any]] = None,
     ) -> None:
         self.manifest_path = Path(manifest_path)
         self.split = split
         self.class_map = ClassMap(classes_path)
         self.parser = yolo_parser or YoloTxtParser()
+        self.transform = transform
+        self.to_tensor = tv_transforms.ToTensor()
         self.items = self._load_items()
 
     def _load_items(self) -> list[ManifestItem]:
@@ -133,9 +141,32 @@ class ManifestDataset:
             ids, bboxes = self.parser.parse(it.label_path)
 
         categories = [self.class_map.name(i) for i in ids]
+        
+        image_data: Any = img
+        if self.transform:
+            try:
+                transformed = self.transform(image=np.array(img), bboxes=bboxes, labels=ids)
+            except TypeError:
+                transformed = self.transform(img)
+
+            if isinstance(transformed, dict):
+                image_data = transformed.get("image", img)
+                bboxes = transformed.get("bboxes", bboxes)
+                ids = transformed.get("labels", ids)
+                categories = [self.class_map.name(i) for i in ids]
+            else:
+                image_data = transformed
+
+        if isinstance(image_data, Image.Image):
+            tensor_image = self.to_tensor(image_data)
+        elif isinstance(image_data, torch.Tensor):
+            tensor_image = image_data
+        else:
+            arr = np.asarray(image_data)
+            tensor_image = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
 
         return {
-            "image": img,
+            "image": tensor_image,
             "width": width,
             "height": height,
             "rel_path": it.rel_path,
@@ -151,10 +182,13 @@ class ManifestDataset:
 class DatasetVisualizer:
     def draw(self, dataset: ManifestDataset, idx: int) -> Image.Image:
         sample = dataset[idx]
-        image = sample["image"].copy()
+        image = sample["image"]
+        if isinstance(image, torch.Tensor):
+            image = tv_transforms.ToPILImage()(image)
+        image = image.copy()
         ann = sample["objects"]
         draw = ImageDraw.Draw(image)
-        width, height = sample["width"], sample["height"]
+        width, height = image.size
 
         for i in range(len(ann["id"])):
             x, y, w, h = ann["bbox"][i]
