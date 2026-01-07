@@ -3,5 +3,7 @@ data/frames_raw/**
 data/labels/**
 data/artifacts/**
 datasets/**
+runs
 
 __pycache__/
+*.avi

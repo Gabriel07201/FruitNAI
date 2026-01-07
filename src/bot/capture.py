@@ -1,0 +1,117 @@
+import time
+from dataclasses import dataclass
+from typing import Optional, List
+
+import numpy as np
+import cv2
+from mss import mss
+
+import win32gui
+import win32con
+
+
+def set_dpi_awareness() -> None:
+    """
+    Evita coordenadas erradas quando a escala do Windows != 100%.
+    """
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2) # PROCESS_PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+@dataclass(frozen=True)
+class WindowRegion:
+    left: int
+    top: int
+    width: int
+    height: int
+
+    def to_mss(self) -> dict:
+        return {"left": self.left, "top": self.top, "width": self.width, "height": self.height}
+
+
+def list_visible_window_titles(limit: int = 60) -> List[str]:
+    titles: List[str] = []
+
+    def enum_handler(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            t = (win32gui.GetWindowText(hwnd) or "").strip()
+            if t:
+                titles.append(t)
+
+    win32gui.EnumWindows(enum_handler, None)
+    return titles[:limit]
+
+
+class WindowLocator:
+    def __init__(self, title_substring: str):
+        self.title_substring = title_substring.lower()
+
+    def _find_hwnd(self) -> Optional[int]:
+        result: List[int] = []
+
+        def enum_handler(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd) or ""
+                if self.title_substring in title.lower():
+                    result.append(hwnd)
+
+        win32gui.EnumWindows(enum_handler, None)
+        return result[0] if result else None
+
+    def get_client_region(self, bring_foreground: bool = True) -> WindowRegion:
+        hwnd = self._find_hwnd()
+        if hwnd is None:
+            raise RuntimeError(f"Não achei janela contendo: '{self.title_substring}'")
+
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.15)
+
+        if bring_foreground:
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+        # Área cliente (sem bordas) -> coordenadas na tela
+        left_top = win32gui.ClientToScreen(hwnd, (0, 0))
+        right_bottom = win32gui.ClientToScreen(hwnd, win32gui.GetClientRect(hwnd)[2:4])
+
+        left, top = left_top
+        right, bottom = right_bottom
+
+        width = max(0, right - left)
+        height = max(0, bottom - top)
+
+        if width == 0 or height == 0:
+            raise RuntimeError("A área cliente está com tamanho 0 (janela minimizada/oculta?).")
+
+        return WindowRegion(left=left, top=top, width=width, height=height)
+
+
+class ScreenGrabber:
+    def __init__(self):
+        self._sct = mss()
+
+    def grab_bgr(self, region: WindowRegion) -> np.ndarray:
+        frame = np.array(self._sct.grab(region.to_mss()))  # BGRA
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+
+class GameCapture:
+    def __init__(self, title_substring: str, bring_foreground: bool = True):
+        self.locator = WindowLocator(title_substring)
+        self.grabber = ScreenGrabber()
+        self.bring_foreground = bring_foreground
+
+    def read(self) -> tuple[np.ndarray, WindowRegion]:
+        region = self.locator.get_client_region(bring_foreground=self.bring_foreground)
+        frame = self.grabber.grab_bgr(region)
+        return frame, region
