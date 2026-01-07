@@ -19,7 +19,7 @@ FRUIT_CLASS_ID = 0
 BOMB_CLASS_ID = 1
 
 # Limita cortes com detecção antiga (evita agir em frames atrasados).
-MAX_DET_AGE_S = 0.03
+MAX_DET_AGE_S = 0.02
 # Evita spam de cortes impondo um intervalo mínimo entre ações.
 MIN_ACTION_INTERVAL_S = 0.06
 # Refoca a janela do jogo periodicamente para manter o foco ativo.
@@ -28,13 +28,13 @@ FOCUS_EVERY_S = 2.50
 # Confiança mínima para reduzir falsos positivos de frutas.
 MIN_FRUIT_CONF = 0.51
 # Área mínima para ignorar frutas pequenas demais.
-MIN_FRUIT_AREA = 400
+MIN_FRUIT_AREA = 500
 # Tempo de bloqueio para não cortar repetidamente o mesmo local.
 RECENT_TTL_S = 0.2
 # IOU mínimo para considerar que é a mesma fruta recentemente cortada.
-RECENT_IOU_THR = 0.2
+RECENT_IOU_THR = 0.12
 # Distância máxima entre centros para considerar repetição de corte.
-RECENT_CENTER_PX = 50
+RECENT_CENTER_PX = 85
 # Multiplicador de área para tornar o bloqueio mais conservador.
 RECENT_AREA_BOOST = 1.35
 # IOU mais permissivo quando a área cresceu (ex.: fruta se aproximando).
@@ -55,11 +55,11 @@ SCORE_WEIGHT_AVG_Y = 1.0            # peso do avg_y no score
 SCORE_WEIGHT_CONF = 260.0           # peso da confiança mínima no score
 SCORE_DISTANCE_PENALTY = 0.10       # penalidade por distância no score
 TOP_FRUITS_FOR_PAIR = 6             # número de frutas consideradas no pairing
-SINGLE_SPEED_FAST_THRESHOLD = 40    # velocidade mínima para usar params rápidos
-SINGLE_SPEED_ANG_THRESHOLD = 60     # velocidade mínima para usar ângulo perpendicular
+SINGLE_SPEED_FAST_THRESHOLD = 80    # velocidade mínima para usar params rápidos
+SINGLE_SPEED_ANG_THRESHOLD = 120     # velocidade mínima para usar ângulo perpendicular
 
 # Predição temporal
-PREDICT_DURATION_FACTOR = 0.7       # fator de predição em duration * fator
+PREDICT_DURATION_FACTOR = 0.5       # fator de predição em duration * fator
 
 FOCUS_WINDOW_X = 90                 # posição X para refoco da janela
 FOCUS_WINDOW_Y = 90                 # posição Y para refoco da janela
@@ -156,6 +156,14 @@ def _nearest_match_velocity(cur_pts, prev_pts, dt, *, max_dist=140):
             px, py = best
             vels.append(((cx - px) / dt, (cy - py) / dt))
     return vels
+
+
+def _shift_box_to_pred(d, px, py):
+    cx, cy = _det_center(d)
+    dx = px - cx
+    dy = py - cy
+    x1, y1, x2, y2 = _det_xyxy(d)
+    return (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
 
 
 def _toggle_running(state: BotState):
@@ -481,8 +489,10 @@ def bot_loop(
                     )
 
                     last_action_t = time.time()
-                    add_recent_box(ax1, ay1, ax2, ay2, last_action_t)
-                    add_recent_box(bx1, by1, bx2, by2, last_action_t)
+                    ra1, ra2, ra3, ra4 = _shift_box_to_pred(da, ax, ay)
+                    rb1, rb2, rb3, rb4 = _shift_box_to_pred(db, bx, by)
+                    add_recent_box(ra1, ra2, ra3, ra4, last_action_t)
+                    add_recent_box(rb1, rb2, rb3, rb4, last_action_t)
                     continue
 
                 # -------------------------
@@ -541,7 +551,8 @@ def bot_loop(
                 )
 
                 last_action_t = time.time()
-                add_recent_box(x1, y1, x2, y2, last_action_t)
+                rx1, ry1, rx2, ry2 = _shift_box_to_pred(d0, px, py)
+                add_recent_box(rx1, ry1, rx2, ry2, last_action_t)
 
             except pyautogui.FailSafeException:
                 state.shutdown.set()
