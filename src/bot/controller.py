@@ -217,7 +217,7 @@ class Controller:
         window_h: Optional[int] = None,
         margin: int = 12,
         overshoot: int = 60,
-        max_overshoot_frac: float | None = 0.45,
+        max_overshoot_frac: float | None = 0.3,
         down_wait: float = 0.07,
         duration: float = 0.18,
         steps: int = 6,
