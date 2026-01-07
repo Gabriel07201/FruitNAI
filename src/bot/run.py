@@ -27,6 +27,34 @@ def _det_wh(d):
     return int(abs(d.x2 - d.x1)), int(abs(d.y2 - d.y1))
 
 
+def _det_xyxy(d):
+    x1 = int(min(d.x1, d.x2))
+    y1 = int(min(d.y1, d.y2))
+    x2 = int(max(d.x1, d.x2))
+    y2 = int(max(d.y1, d.y2))
+    return x1, y1, x2, y2
+
+
+def _box_iou(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, (ax2 - ax1)) * max(0, (ay2 - ay1))
+    area_b = max(0, (bx2 - bx1)) * max(0, (by2 - by1))
+    union = area_a + area_b - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
 def _dist_point_to_segment(px, py, ax, ay, bx, by) -> float:
     abx = bx - ax
     aby = by - ay
@@ -123,8 +151,12 @@ def bot_loop(
 
     min_fruit_conf = 0.35         # reduz falso positivo que vira "corte a mais"
     min_fruit_area = 800          # ignora frutas com areas muito pequenas (metades)
-    recent_ttl_s = 0.16           # bloqueia repetir corte no mesmo lugar por um tempo N
-    recent_radius_px = 85
+    recent_ttl_s = 0.32           # bloqueia repetir corte no mesmo lugar por um tempo N
+    recent_iou_thr = 0.35
+    recent_center_px = 60
+    recent_area_boost = 1.35
+    recent_area_iou_thr = 0.15
+    recent_area_center_px = 110
     
     predictor = YoloOnnxPredictor(
         onnx_path=onnx_path,
@@ -168,21 +200,40 @@ def bot_loop(
         last_focus_t = 0.0
         last_action_t = 0.0
 
-        recent_targets = []  # (x, y, t)
+        recent_boxes = []  # (x1, y1, x2, y2, t)
 
-        def prune_recent(now):
-            recent_targets[:] = [(x, y, t) for (x, y, t) in recent_targets if (now - t) <= recent_ttl_s]
+        def prune_recent_boxes(now):
+            recent_boxes[:] = [
+                (x1, y1, x2, y2, t)
+                for (x1, y1, x2, y2, t) in recent_boxes
+                if (now - t) <= recent_ttl_s
+            ]
 
-        def is_recent(x, y, now):
-            prune_recent(now)
-            for rx, ry, rt in recent_targets:
-                if (x - rx) * (x - rx) + (y - ry) * (y - ry) <= (recent_radius_px * recent_radius_px):
+        def _recent_center_match(box, ref_box, *, center_thr):
+            ax1, ay1, ax2, ay2 = box
+            bx1, by1, bx2, by2 = ref_box
+            acx = 0.5 * (ax1 + ax2)
+            acy = 0.5 * (ay1 + ay2)
+            bcx = 0.5 * (bx1 + bx2)
+            bcy = 0.5 * (by1 + by2)
+            dx = acx - bcx
+            dy = acy - bcy
+            return (dx * dx + dy * dy) <= (center_thr * center_thr)
+
+        def is_recent_box(x1, y1, x2, y2, now, *, iou_thr, center_thr):
+            prune_recent_boxes(now)
+            box = (x1, y1, x2, y2)
+            for rx1, ry1, rx2, ry2, rt in recent_boxes:
+                ref_box = (rx1, ry1, rx2, ry2)
+                if _box_iou(box, ref_box) >= iou_thr:
+                    return True
+                if _recent_center_match(box, ref_box, center_thr=center_thr):
                     return True
             return False
 
-        def add_recent(x, y, now):
-            recent_targets.append((x, y, now))
-            prune_recent(now)
+        def add_recent_box(x1, y1, x2, y2, now):
+            recent_boxes.append((x1, y1, x2, y2, now))
+            prune_recent_boxes(now)
 
         def predict_point(x, y, vx, vy, tsec):
             return int(x + vx * tsec), int(y + vy * tsec)
@@ -220,7 +271,9 @@ def bot_loop(
                 # det velha -> não age (evita cortar "no passado")
                 time.sleep(0.002)
                 continue
-
+            
+            prune_recent_boxes(now)
+            
             # cooldown global
             if (now - last_action_t) < min_action_interval_s:
                 time.sleep(0.001)
@@ -237,9 +290,21 @@ def bot_loop(
                 conf = float(getattr(d, "conf", 0.0))
                 w, h = _det_wh(d)
                 area = w * h
+                x1, y1, x2, y2 = _det_xyxy(d)
+                boosted_min_area = min_fruit_area
+                if is_recent_box(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    now,
+                    iou_thr=recent_area_iou_thr,
+                    center_thr=recent_area_center_px,
+                ):
+                    boosted_min_area = int(min_fruit_area * recent_area_boost)
                 if conf < min_fruit_conf:
                     continue
-                if area < min_fruit_area:
+                if area < boosted_min_area:
                     continue
                 fruits.append(d)
 
@@ -309,9 +374,27 @@ def bot_loop(
                         if not clamp_inside_window(bx, by, region.width, region.height, 14):
                             continue
 
-                        midx = int((ax + bx) / 2)
-                        midy = int((ay + by) / 2)
-                        if is_recent(midx, midy, now):
+                        ax1, ay1, ax2, ay2 = _det_xyxy(da)
+                        bx1, by1, bx2, by2 = _det_xyxy(db)
+                        if is_recent_box(
+                            ax1,
+                            ay1,
+                            ax2,
+                            ay2,
+                            now,
+                            iou_thr=recent_iou_thr,
+                            center_thr=recent_center_px,
+                        ):
+                            continue
+                        if is_recent_box(
+                            bx1,
+                            by1,
+                            bx2,
+                            by2,
+                            now,
+                            iou_thr=recent_iou_thr,
+                            center_thr=recent_center_px,
+                        ):
                             continue
 
                         # checa bombas previstas
@@ -338,12 +421,11 @@ def bot_loop(
                             avg_diag = 0.5 * (math.hypot(wa, ha) + math.hypot(wb, hb))
                             dyn_overshoot = max(20, int(0.25 * avg_diag))
                             best_score = score
-                            best_pair = (ax, ay, bx, by, midx, midy, dyn_overshoot)
+                            best_pair = (ax, ay, bx, by, dyn_overshoot, ax1, ay1, ax2, ay2, bx1, by1, bx2, by2)
 
             try:
                 if best_pair is not None:
-                    ax, ay, bx, by, midx, midy, dyn_overshoot = best_pair
-
+                    ax, ay, bx, by, dyn_overshoot, ax1, ay1, ax2, ay2, bx1, by1, bx2, by2 = best_pair
                     if not last_instant_bomb_check(ax, ay, bx, by):
                         continue
 
@@ -358,7 +440,8 @@ def bot_loop(
                     )
 
                     last_action_t = time.time()
-                    add_recent(midx, midy, last_action_t)
+                    add_recent_box(ax1, ay1, ax2, ay2, last_action_t)
+                    add_recent_box(bx1, by1, bx2, by2, last_action_t)
                     continue
 
                 # -------------------------
@@ -379,7 +462,16 @@ def bot_loop(
                 if not clamp_inside_window(px, py, region.width, region.height, 14):
                     continue
 
-                if is_recent(px, py, now):
+                x1, y1, x2, y2 = _det_xyxy(d0)
+                if is_recent_box(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    now,
+                    iou_thr=recent_iou_thr,
+                    center_thr=recent_center_px,
+                ):
                     continue
 
                 # Direção: perpendicular à velocidade quando disponível
@@ -408,7 +500,7 @@ def bot_loop(
                 )
 
                 last_action_t = time.time()
-                add_recent(px, py, last_action_t)
+                add_recent_box(x1, y1, x2, y2, last_action_t)
 
             except pyautogui.FailSafeException:
                 state.shutdown.set()
