@@ -16,12 +16,9 @@ TITLE_SUBSTRING = "Fruit Ninja"
 ONNX_PATH = "models/runs/fruitninja_yolo11n/weights/best.onnx"
 
 FRUIT_CLASS_ID = 0
-BOMB_CLASS_ID = 1  # ajuste se necessário
+BOMB_CLASS_ID = 1
 
 
-# -----------------------------
-# Utilidades geométricas
-# -----------------------------
 def _det_center(d):
     return int((d.x1 + d.x2) / 2), int((d.y1 + d.y2) / 2)
 
@@ -58,16 +55,7 @@ def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = 45) -> b
     return True
 
 
-# -----------------------------
-# Tracking bem simples (velocidade)
-# -----------------------------
 def _nearest_match_velocity(cur_pts, prev_pts, dt, *, max_dist=140):
-    """
-    cur_pts: list[(x,y)]
-    prev_pts: list[(x,y)]
-    Retorna list[(vx,vy)] alinhada com cur_pts.
-    Matching por vizinho mais próximo (sem IDs).
-    """
     if dt <= 1e-6 or not prev_pts:
         return [(0.0, 0.0) for _ in cur_pts]
 
@@ -104,14 +92,6 @@ def bot_loop(
     title_substring: str = TITLE_SUBSTRING,
     onnx_path: str = ONNX_PATH,
 ):
-    """
-    Melhorias principais:
-      - Ação só usa dets "frescas" (max_det_age_s).
-      - Recheck de bombas imediatamente antes do mouseDown.
-      - Compensação de movimento (previsão por velocidade).
-      - Atualiza shared-state imediatamente após predict (antes do draw/imshow).
-    """
-
     set_dpi_awareness()
 
     def on_press(key):
@@ -141,29 +121,44 @@ def bot_loop(
     lock = threading.Lock()
     latest_dets = []
     latest_region = None
-    latest_ts = 0.0
-    latest_seq = 0  # incrementa a cada inferência
+    latest_ts = 0.0        # timestamp do FRAME (não do fim da inferência)
+    latest_seq = 0
 
-    # Tuning (importantes)
-    max_det_age_s = 0.05  # se detecção tiver mais velha que isso, não age
+    # -------------------------
+    # TUNING PRINCIPAL
+    # -------------------------
+    max_det_age_s = 0.035         # <- AQUI você deixa o "age max" mais rígido (0.025~0.045)
+    min_action_interval_s = 0.085 # intervalo mínimo entre swipes (evita spam)
     focus_every_s = 2.5
 
-    # Parâmetros da ação (ajuste aqui)
-    # O ponto é que o t_pred usa down_wait + duration/2
-    single_params = dict(
-        length=145,
-        angle_deg=-45.0,
+    min_fruit_conf = 0.35         # reduz falso positivo que vira "corte a mais"
+    min_fruit_area = 800          # ignora dets muito pequenas (metades/efeitos)
+    recent_ttl_s = 0.16           # bloqueia repetir corte no mesmo lugar por um curto período
+    recent_radius_px = 85
+
+    # Parâmetros da ação
+    single_params_fast = dict(
+        length=150,
         overshoot=65,
-        down_wait=0.05,
+        down_wait=0.04,
+        duration=0.09,
+        steps=4,
+    )
+
+    # quando NÃO tem velocidade (1ª aparição), faz um slice mais "generoso"
+    single_params_unknown = dict(
+        length=200,
+        overshoot=80,
+        down_wait=0.04,
         duration=0.10,
-        steps=5,
+        steps=4,
     )
 
     pair_params = dict(
         overshoot=70,
-        down_wait=0.05,
-        duration=0.12,
-        steps=6,
+        down_wait=0.04,
+        duration=0.10,
+        steps=5,
     )
 
     # Estado interno do worker (pra estimar velocidade)
@@ -178,6 +173,36 @@ def bot_loop(
         last_focus_t = 0.0
         last_action_t = 0.0
 
+        recent_targets = []  # (x, y, t)
+
+        def prune_recent(now):
+            recent_targets[:] = [(x, y, t) for (x, y, t) in recent_targets if (now - t) <= recent_ttl_s]
+
+        def is_recent(x, y, now):
+            prune_recent(now)
+            for rx, ry, rt in recent_targets:
+                if (x - rx) * (x - rx) + (y - ry) * (y - ry) <= (recent_radius_px * recent_radius_px):
+                    return True
+            return False
+
+        def add_recent(x, y, now):
+            recent_targets.append((x, y, now))
+            prune_recent(now)
+
+        def predict_point(x, y, vx, vy, tsec):
+            return int(x + vx * tsec), int(y + vy * tsec)
+
+        def last_instant_bomb_check(ax, ay, bx, by) -> bool:
+            with lock:
+                dets2 = list(latest_dets)
+            bombs2 = [d for d in dets2 if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
+            if not bombs2:
+                return True
+            return _segment_is_bomb_safe(ax, ay, bx, by, bombs2, base_safe_px=50)
+
+        def clamp_inside_window(x, y, w, h, margin):
+            return (margin <= x <= (w - margin)) and (margin <= y <= (h - margin))
+
         while not state.shutdown.is_set():
             if not state.running.is_set():
                 time.sleep(0.03)
@@ -190,22 +215,43 @@ def bot_loop(
                 seq = latest_seq
 
             if region is None or seq == last_seen_seq:
-                time.sleep(0.005)
+                time.sleep(0.003)
                 continue
             last_seen_seq = seq
 
             now = time.time()
-            age = now - ts
+            age = now - ts  # ts é do frame
             if age > max_det_age_s:
-                # detecção velha → melhor não agir do que agir atrasado
+                # det velha -> não age (evita cortar "no passado")
+                time.sleep(0.002)
                 continue
 
-            fruits = [d for d in dets if int(getattr(d, "cls", -1)) == FRUIT_CLASS_ID]
+            # cooldown global
+            if (now - last_action_t) < min_action_interval_s:
+                time.sleep(0.001)
+                continue
+
+            fruits_raw = [d for d in dets if int(getattr(d, "cls", -1)) == FRUIT_CLASS_ID]
             bombs = [d for d in dets if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
+            if not fruits_raw:
+                continue
+
+            # Filtra frutas (conf/area)
+            fruits = []
+            for d in fruits_raw:
+                conf = float(getattr(d, "conf", 0.0))
+                w, h = _det_wh(d)
+                area = w * h
+                if conf < min_fruit_conf:
+                    continue
+                if area < min_fruit_area:
+                    continue
+                fruits.append(d)
+
             if not fruits:
                 continue
 
-            # Estima velocidades (matching simples com frame anterior)
+            # Estima velocidades
             cur_fruit_pts = [_det_center(d) for d in fruits]
             cur_bomb_pts = [_det_center(d) for d in bombs]
 
@@ -221,29 +267,6 @@ def bot_loop(
             prev_bomb_pts = cur_bomb_pts
             prev_ts = ts
 
-            # Previsão: onde estará no meio do swipe
-            # (latência até agora + down_wait + duration/2)
-            # Vamos calcular com base em single_params como aproximação;
-            # quando for par, usamos pair_params.
-            # Isso já reduz MUITO o “corte no ponto antigo”.
-            # ---------------------------------------------------------
-            def predict_point(x, y, vx, vy, tsec):
-                return int(x + vx * tsec), int(y + vy * tsec)
-
-            # Ordena frutas por: mais embaixo + maior conf
-            fruits_scored = []
-            for i, d in enumerate(fruits):
-                cx, cy = cur_fruit_pts[i]
-                vx, vy = fruit_vels[i]
-                conf = float(getattr(d, "conf", 0.0))
-                fruits_scored.append((cy, conf, i, d, cx, cy, vx, vy))
-
-            fruits_scored.sort(key=lambda t: (-t[0], -t[1]))
-
-            # cooldown mínimo só pra não spammar mouseDown
-            if (now - last_action_t) < 0.06:
-                continue
-
             # Foco (não toda hora)
             if (now - last_focus_t) >= focus_every_s:
                 controller.focus_window(
@@ -256,13 +279,22 @@ def bot_loop(
                 )
                 last_focus_t = now
 
+            # Ordena frutas por: mais embaixo + maior conf
+            fruits_scored = []
+            for i, d in enumerate(fruits):
+                cx, cy = cur_fruit_pts[i]
+                vx, vy = fruit_vels[i]
+                conf = float(getattr(d, "conf", 0.0))
+                fruits_scored.append((cy, conf, i, d, cx, cy, vx, vy))
+            fruits_scored.sort(key=lambda t: (-t[0], -t[1]))
+
             # -------------------------
             # Tenta par (2 frutas)
             # -------------------------
             best_pair = None
             best_score = -1e18
-
             top = fruits_scored[:6]
+
             if len(top) >= 2:
                 for a in range(len(top)):
                     for b in range(a + 1, len(top)):
@@ -270,27 +302,31 @@ def bot_loop(
                         _, confb, ib, db, cxb, cyb, vxb, vyb = top[b]
 
                         dist_ab = math.hypot(cxb - cxa, cyb - cya)
-                        if dist_ab < 45:
+                        if dist_ab < 55 or dist_ab > 320:
                             continue
 
                         t_pred = age + pair_params["down_wait"] + pair_params["duration"] * 0.5
                         ax, ay = predict_point(cxa, cya, vxa, vya, t_pred)
                         bx, by = predict_point(cxb, cyb, vxb, vyb, t_pred)
 
-                        # também prediz bombas para checar segurança
-                        pred_bombs = []
+                        if not clamp_inside_window(ax, ay, region.width, region.height, 14):
+                            continue
+                        if not clamp_inside_window(bx, by, region.width, region.height, 14):
+                            continue
+
+                        midx = int((ax + bx) / 2)
+                        midy = int((ay + by) / 2)
+                        if is_recent(midx, midy, now):
+                            continue
+
+                        # checa bombas previstas
+                        safe = True
                         for k, bd in enumerate(bombs):
                             bcx, bcy = cur_bomb_pts[k]
                             bvx, bvy = bomb_vels[k]
                             px, py = predict_point(bcx, bcy, bvx, bvy, t_pred)
-                            # hack: reaproveita a bbox original só pra radius (w/h)
-                            pred_bombs.append((bd, px, py))
-
-                        # checagem de bomba na linha (usando centros previstos)
-                        safe = True
-                        for (bd, px, py) in pred_bombs:
                             bw, bh = _det_wh(bd)
-                            safe_r = max(45, int(0.35 * math.hypot(bw, bh)))
+                            safe_r = max(50, int(0.38 * math.hypot(bw, bh)))
                             if _dist_point_to_segment(px, py, ax, ay, bx, by) <= safe_r:
                                 safe = False
                                 break
@@ -299,29 +335,17 @@ def bot_loop(
 
                         avg_y = 0.5 * (ay + by)
                         cmin = min(confa, confb)
-                        score = (avg_y * 1.0) + (cmin * 250.0) - (dist_ab * 0.12)
+                        score = (avg_y * 1.0) + (cmin * 260.0) - (dist_ab * 0.10)
 
                         if score > best_score:
                             best_score = score
-                            best_pair = (ax, ay, bx, by)
-
-            # --------------------------------------------
-            # Recheck “último instante” contra bombas atuais
-            # (resolve seu caso: bomba apareceu depois do predict)
-            # --------------------------------------------
-            def last_instant_bomb_check(ax, ay, bx, by) -> bool:
-                with lock:
-                    dets2 = list(latest_dets)
-                bombs2 = [d for d in dets2 if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
-                if not bombs2:
-                    return True
-                return _segment_is_bomb_safe(ax, ay, bx, by, bombs2, base_safe_px=48)
+                            best_pair = (ax, ay, bx, by, midx, midy)
 
             try:
                 if best_pair is not None:
-                    ax, ay, bx, by = best_pair
+                    ax, ay, bx, by, midx, midy = best_pair
+
                     if not last_instant_bomb_check(ax, ay, bx, by):
-                        # aborta pra não morrer por bomba “nova”
                         continue
 
                     controller.slice_segment_in_window(
@@ -332,22 +356,41 @@ def bot_loop(
                         margin=14,
                         **pair_params
                     )
+
                     last_action_t = time.time()
+                    add_recent(midx, midy, last_action_t)
                     continue
 
                 # -------------------------
-                # Fallback: 1 fruta (predita)
+                # Fallback: 1 fruta
                 # -------------------------
-                _, _, i0, d0, cx, cy, vx, vy = fruits_scored[0]
-                t_pred = age + single_params["down_wait"] + single_params["duration"] * 0.5
+                _, conf0, i0, d0, cx, cy, vx, vy = fruits_scored[0]
+
+                speed = math.hypot(vx, vy)
+
+                # latência esperada até metade do swipe
+                # (age já inclui inferência, porque ts é do frame)
+                base_params = single_params_fast if speed > 40 else single_params_unknown
+                t_pred = age + base_params["down_wait"] + base_params["duration"] * 0.5
                 px, py = predict_point(cx, cy, vx, vy, t_pred)
 
-                # monta o segmento aproximado do slice pra recheck
-                # (diagonal curta ao redor do centro previsto)
-                ax = px - 60
-                ay = py + 60
-                bx = px + 60
-                by = py - 60
+                if not clamp_inside_window(px, py, region.width, region.height, 14):
+                    continue
+
+                if is_recent(px, py, now):
+                    continue
+
+                # Direção: perpendicular à velocidade quando disponível
+                if speed > 60:
+                    ang = math.degrees(math.atan2(vy, vx)) + 90.0
+                else:
+                    ang = -45.0
+
+                # Segmento pra recheck de bomba no último instante
+                ax = px - 70
+                ay = py + 70
+                bx = px + 70
+                by = py - 70
                 if not last_instant_bomb_check(ax, ay, bx, by):
                     continue
 
@@ -357,9 +400,12 @@ def bot_loop(
                     window_w=region.width,
                     window_h=region.height,
                     margin=14,
-                    **single_params
+                    angle_deg=ang,
+                    **base_params
                 )
+
                 last_action_t = time.time()
+                add_recent(px, py, last_action_t)
 
             except pyautogui.FailSafeException:
                 state.shutdown.set()
@@ -374,27 +420,26 @@ def bot_loop(
     # Loop principal (captura + inferência + debug)
     last_t = time.time()
     fps = 0.0
-    frame_count = 0
 
     try:
         while not state.shutdown.is_set():
             frame, region = capture.read()
+            t_frame = time.time()  # <<<< timestamp do frame
 
             t0 = time.time()
             dets = predictor.predict(frame)
             t1 = time.time()
 
-            # Publica para o worker IMEDIATAMENTE (antes de draw/imshow)
+            # Publica para o worker antes de draw/imshow
             with lock:
                 latest_dets = dets
                 latest_region = region
-                latest_ts = t1
+                latest_ts = t_frame     # <<<< era t1; agora é o frame
                 latest_seq += 1
 
             # Debug
             vis = predictor.draw(frame, dets)
 
-            # FPS
             now = time.time()
             dt = max(1e-6, now - last_t)
             last_t = now
@@ -420,8 +465,6 @@ def bot_loop(
             if k == ord("q"):
                 state.shutdown.set()
                 break
-
-            frame_count += 1
 
     finally:
         listener.stop()
