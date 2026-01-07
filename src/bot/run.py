@@ -107,14 +107,6 @@ def bot_loop(
 
     capture = GameCapture(title_substring=title_substring, bring_foreground=True)
 
-    predictor = YoloOnnxPredictor(
-        onnx_path=onnx_path,
-        imgsz=640,
-        conf_thres=0.25,
-        iou_thres=0.45,
-        class_agnostic=False,
-    )
-
     controller = Controller(pause=0.0, fail_safe=True)
 
     # Shared state
@@ -124,41 +116,44 @@ def bot_loop(
     latest_ts = 0.0        # timestamp do FRAME (não do fim da inferência)
     latest_seq = 0
 
-    # -------------------------
     # TUNING PRINCIPAL
-    # -------------------------
-    max_det_age_s = 0.035         # <- AQUI você deixa o "age max" mais rígido (0.025~0.045)
-    min_action_interval_s = 0.085 # intervalo mínimo entre swipes (evita spam)
-    focus_every_s = 2.5
+    max_det_age_s = 0.03         # age max/max age da detecção (evita cortar no passado)
+    min_action_interval_s = 0.06 # intervalo mínimo entre cortes (evita spam de cortes)
+    focus_every_s = 2.50            # refoca janela a cada N segundos
 
     min_fruit_conf = 0.35         # reduz falso positivo que vira "corte a mais"
-    min_fruit_area = 800          # ignora dets muito pequenas (metades/efeitos)
-    recent_ttl_s = 0.16           # bloqueia repetir corte no mesmo lugar por um curto período
+    min_fruit_area = 800          # ignora frutas com areas muito pequenas (metades)
+    recent_ttl_s = 0.16           # bloqueia repetir corte no mesmo lugar por um tempo N
     recent_radius_px = 85
+    
+    predictor = YoloOnnxPredictor(
+        onnx_path=onnx_path,
+        imgsz=640,
+        conf_thres=min_fruit_conf,
+        iou_thres=0.45,
+        class_agnostic=False,
+    )
 
     # Parâmetros da ação
     single_params_fast = dict(
-        length=150,
-        overshoot=65,
-        down_wait=0.04,
-        duration=0.09,
-        steps=4,
+        length=120,
+        down_wait=0.01,
+        duration=0.05,
+        steps=2,
     )
 
     # quando NÃO tem velocidade (1ª aparição), faz um slice mais "generoso"
     single_params_unknown = dict(
-        length=200,
-        overshoot=80,
-        down_wait=0.04,
-        duration=0.10,
-        steps=4,
+        length=150,
+        down_wait=0.02,
+        duration=0.07,
+        steps=2,
     )
 
     pair_params = dict(
-        overshoot=70,
-        down_wait=0.04,
-        duration=0.10,
-        steps=5,
+        down_wait=0.02,
+        duration=0.07,
+        steps=3,
     )
 
     # Estado interno do worker (pra estimar velocidade)
@@ -305,7 +300,7 @@ def bot_loop(
                         if dist_ab < 55 or dist_ab > 320:
                             continue
 
-                        t_pred = age + pair_params["down_wait"] + pair_params["duration"] * 0.5
+                        t_pred = age + pair_params["down_wait"] + pair_params["duration"] * 0.7
                         ax, ay = predict_point(cxa, cya, vxa, vya, t_pred)
                         bx, by = predict_point(cxb, cyb, vxb, vyb, t_pred)
 
@@ -338,12 +333,16 @@ def bot_loop(
                         score = (avg_y * 1.0) + (cmin * 260.0) - (dist_ab * 0.10)
 
                         if score > best_score:
+                            wa, ha = _det_wh(da)
+                            wb, hb = _det_wh(db)
+                            avg_diag = 0.5 * (math.hypot(wa, ha) + math.hypot(wb, hb))
+                            dyn_overshoot = max(20, int(0.25 * avg_diag))
                             best_score = score
-                            best_pair = (ax, ay, bx, by, midx, midy)
+                            best_pair = (ax, ay, bx, by, midx, midy, dyn_overshoot)
 
             try:
                 if best_pair is not None:
-                    ax, ay, bx, by, midx, midy = best_pair
+                    ax, ay, bx, by, midx, midy, dyn_overshoot = best_pair
 
                     if not last_instant_bomb_check(ax, ay, bx, by):
                         continue
@@ -354,6 +353,7 @@ def bot_loop(
                         window_w=region.width,
                         window_h=region.height,
                         margin=14,
+                        overshoot=dyn_overshoot,
                         **pair_params
                     )
 
@@ -371,7 +371,9 @@ def bot_loop(
                 # latência esperada até metade do swipe
                 # (age já inclui inferência, porque ts é do frame)
                 base_params = single_params_fast if speed > 40 else single_params_unknown
-                t_pred = age + base_params["down_wait"] + base_params["duration"] * 0.5
+                w0, h0 = _det_wh(d0)
+                dyn_overshoot = max(20, int(0.25 * math.hypot(w0, h0)))
+                t_pred = age + base_params["down_wait"] + base_params["duration"] * 0.7
                 px, py = predict_point(cx, cy, vx, vy, t_pred)
 
                 if not clamp_inside_window(px, py, region.width, region.height, 14):
@@ -401,6 +403,7 @@ def bot_loop(
                     window_h=region.height,
                     margin=14,
                     angle_deg=ang,
+                    overshoot=dyn_overshoot,
                     **base_params
                 )
 

@@ -217,6 +217,7 @@ class Controller:
         window_h: Optional[int] = None,
         margin: int = 12,
         overshoot: int = 60,
+        max_overshoot_frac: float | None = 0.45,
         down_wait: float = 0.07,
         duration: float = 0.18,
         steps: int = 6,
@@ -244,6 +245,9 @@ class Controller:
 
         ux = vx / mag
         uy = vy / mag
+        
+        if max_overshoot_frac is not None and max_overshoot_frac > 0:
+            overshoot = min(overshoot, int(mag * max_overshoot_frac))
 
         sx = int(x1 - ux * overshoot)
         sy = int(y1 - uy * overshoot)
