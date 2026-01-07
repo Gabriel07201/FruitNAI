@@ -18,6 +18,12 @@ ONNX_PATH = "models/runs/fruitninja_yolo11n/weights/best.onnx"
 FRUIT_CLASS_ID = 0
 BOMB_CLASS_ID = 1
 
+SAFE_BASE_PX = 65
+SAFE_PREDICT_BASE_PX = 60
+SAFE_BOMB_DIAG_FACTOR = 0.35
+SAFE_PREDICT_DIAG_FACTOR = 0.45
+
+
 
 def _det_center(d):
     return int((d.x1 + d.x2) / 2), int((d.y1 + d.y2) / 2)
@@ -72,11 +78,11 @@ def _dist_point_to_segment(px, py, ax, ay, bx, by) -> float:
     return math.hypot(px - cx, py - cy)
 
 
-def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = 45) -> bool:
+def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = SAFE_BASE_PX) -> bool:
     for b in bombs:
         cx, cy = _det_center(b)
         bw, bh = _det_wh(b)
-        safe = max(base_safe_px, int(0.35 * math.hypot(bw, bh)))
+        safe = max(base_safe_px, int(SAFE_BOMB_DIAG_FACTOR * math.hypot(bw, bh)))
         dist = _dist_point_to_segment(cx, cy, ax, ay, bx, by)
         if dist <= safe:
             return False
@@ -244,7 +250,7 @@ def bot_loop(
             bombs2 = [d for d in dets2 if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
             if not bombs2:
                 return True
-            return _segment_is_bomb_safe(ax, ay, bx, by, bombs2, base_safe_px=50)
+            return _segment_is_bomb_safe(ax, ay, bx, by, bombs2, base_safe_px=SAFE_BASE_PX)
 
         def clamp_inside_window(x, y, w, h, margin):
             return (margin <= x <= (w - margin)) and (margin <= y <= (h - margin))
@@ -404,7 +410,10 @@ def bot_loop(
                             bvx, bvy = bomb_vels[k]
                             px, py = predict_point(bcx, bcy, bvx, bvy, t_pred)
                             bw, bh = _det_wh(bd)
-                            safe_r = max(50, int(0.38 * math.hypot(bw, bh)))
+                            safe_r = max(
+                                SAFE_PREDICT_BASE_PX,
+                                int(SAFE_PREDICT_DIAG_FACTOR * math.hypot(bw, bh)),
+                            )
                             if _dist_point_to_segment(px, py, ax, ay, bx, by) <= safe_r:
                                 safe = False
                                 break
