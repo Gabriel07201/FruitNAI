@@ -63,11 +63,6 @@ PAIR_PARAMS = {               # params de slice para pares (length é reservado)
     "steps": 3,
 }
 PAIR_SLICE_PARAMS = {k: v for k, v in PAIR_PARAMS.items() if k != "length"}
-PRED_DURATION_FRAC = 0.7       # fração da duração usada para prever posição
-
-# Velocidade/seleção
-SPEED_FAST_THRESHOLD = 40.0    # troca para slice rápido acima desse valor
-SPEED_DIR_THRESHOLD = 60.0     # usa direção da velocidade acima desse valor
 TOP_FRUITS_LIMIT = 1           # máximo de frutas consideradas para pares
 PAIR_MIN_DIST_PX = 9999          # distância mínima entre frutas do par
 PAIR_MAX_DIST_PX = 9999         # distância máxima entre frutas do par
@@ -88,13 +83,10 @@ OVERSHOOT_DIAG_FACTOR = 0.25   # fator sobre a diagonal do bbox
 BOMB_SAFE_BASE_PX = 80         # raio base de segurança contra bombas
 BOMB_SAFE_DIAG_FACTOR = 0.40   # fator sobre a diagonal do bbox da bomba
 INSTANT_SAFE_BASE_PX = 80      # raio base no recheck instantâneo
-BOMB_PRED_SAFE_BASE_PX = 80    # raio base na previsão de bomba
-BOMB_PRED_SAFE_DIAG_FACTOR = 0.40  # fator sobre a diagonal na previsão
 
 # Limites/epsilons
 TIME_EPS_S = 1e-6              # evita divisões por zero
 SEGMENT_EPS = 1e-9             # epsilon para degenerate segment
-VELOCITY_MATCH_MAX_DIST_PX = 140  # distância máxima para match de velocidade
 
 # Esperas do loop
 SLEEP_WHEN_STOPPED_S = 0.03
@@ -114,7 +106,6 @@ DEBUG_WAITKEY_MS = 1
 
 # Direção do slice
 DEFAULT_SLICE_ANGLE_DEG = -45.0
-PERP_ANGLE_OFFSET_DEG = 90.0
 
 # Controller
 CONTROLLER_PAUSE_S = 0.0       # pausa interna do controlador
@@ -152,7 +143,7 @@ def _dist_point_to_segment(px, py, ax, ay, bx, by) -> float:
     return math.hypot(px - cx, py - cy)
 
 
-def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = BOMB_PRED_SAFE_BASE_PX) -> bool:
+def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = BOMB_SAFE_BASE_PX) -> bool:
     for b in bombs:
         cx, cy = _det_center(b)
         bw, bh = _det_wh(b)
@@ -161,29 +152,6 @@ def _segment_is_bomb_safe(ax, ay, bx, by, bombs, *, base_safe_px: int = BOMB_PRE
         if dist <= safe:
             return False
     return True
-
-
-def _nearest_match_velocity(cur_pts, prev_pts, dt, *, max_dist=VELOCITY_MATCH_MAX_DIST_PX):
-    if dt <= TIME_EPS_S or not prev_pts:
-        return [(0.0, 0.0) for _ in cur_pts]
-
-    vels = []
-    for (cx, cy) in cur_pts:
-        best = None
-        best_d2 = float("inf")
-        for (px, py) in prev_pts:
-            dx = cx - px
-            dy = cy - py
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best = (px, py)
-        if best is None or best_d2 > (max_dist * max_dist):
-            vels.append((0.0, 0.0))
-        else:
-            px, py = best
-            vels.append(((cx - px) / dt, (cy - py) / dt))
-    return vels
 
 
 def _toggle_running(state: BotState):
@@ -260,7 +228,6 @@ def bot_loop(
                 "recent_radius_px": RECENT_RADIUS_PX,
                 "predict_imgsz": PREDICT_IMGSZ,
                 "predict_iou_thres": PREDICT_IOU_THRES,
-                "pred_duration_frac": PRED_DURATION_FRAC,
                 "top_fruits_limit": TOP_FRUITS_LIMIT,
             },
             "slice_params": {
@@ -268,10 +235,6 @@ def bot_loop(
                 "single_unknown_params": SINGLE_UNKNOWN_PARAMS,
                 "pair_params": PAIR_PARAMS,
                 "pair_slice_params": PAIR_SLICE_PARAMS,
-            },
-            "speed_params": {
-                "speed_fast_threshold": SPEED_FAST_THRESHOLD,
-                "speed_dir_threshold": SPEED_DIR_THRESHOLD,
             },
             "pair_selection": {
                 "pair_min_dist_px": PAIR_MIN_DIST_PX,
@@ -289,8 +252,6 @@ def bot_loop(
                 "bomb_safe_base_px": BOMB_SAFE_BASE_PX,
                 "bomb_safe_diag_factor": BOMB_SAFE_DIAG_FACTOR,
                 "instant_safe_base_px": INSTANT_SAFE_BASE_PX,
-                "bomb_pred_safe_base_px": BOMB_PRED_SAFE_BASE_PX,
-                "bomb_pred_safe_diag_factor": BOMB_PRED_SAFE_DIAG_FACTOR,
             },
             "focus_params": {
                 "focus_point_x": FOCUS_POINT_X,
@@ -299,7 +260,6 @@ def bot_loop(
             "limits_eps": {
                 "time_eps_s": TIME_EPS_S,
                 "segment_eps": SEGMENT_EPS,
-                "velocity_match_max_dist_px": VELOCITY_MATCH_MAX_DIST_PX,
             },
             "loop_sleeps": {
                 "sleep_when_stopped_s": SLEEP_WHEN_STOPPED_S,
@@ -319,7 +279,6 @@ def bot_loop(
             },
             "direction_params": {
                 "default_slice_angle_deg": DEFAULT_SLICE_ANGLE_DEG,
-                "perp_angle_offset_deg": PERP_ANGLE_OFFSET_DEG,
             },
             "controller_params": {
                 "controller_pause_s": CONTROLLER_PAUSE_S,
@@ -339,13 +298,7 @@ def bot_loop(
     )
 
 
-    # Estado interno do worker (pra estimar velocidade)
-    prev_fruit_pts = []
-    prev_bomb_pts = []
-    prev_ts = None
-
     def action_worker():
-        nonlocal prev_fruit_pts, prev_bomb_pts, prev_ts
 
         last_seen_seq = -1
         last_focus_t = 0.0
@@ -371,9 +324,6 @@ def bot_loop(
         def add_recent(x, y, now):
             recent_targets.append((x, y, now))
             prune_recent(now)
-
-        def predict_point(x, y, vx, vy, tsec):
-            return int(x + vx * tsec), int(y + vy * tsec)
         
         def log_skip(reason, seq, **fields):
             nonlocal last_skip_log_t, last_skip_agg_t
@@ -508,21 +458,7 @@ def bot_loop(
                 log_skip("filtered_out", seq, n_raw=len(fruits_raw))
                 continue
 
-            # Estima velocidades
             cur_fruit_pts = [_det_center(d) for d in fruits]
-            cur_bomb_pts = [_det_center(d) for d in bombs]
-
-            if prev_ts is None:
-                dtv = 0.0
-            else:
-                dtv = max(TIME_EPS_S, ts - prev_ts)
-
-            fruit_vels = _nearest_match_velocity(cur_fruit_pts, prev_fruit_pts, dtv)
-            bomb_vels = _nearest_match_velocity(cur_bomb_pts, prev_bomb_pts, dtv)
-
-            prev_fruit_pts = cur_fruit_pts
-            prev_bomb_pts = cur_bomb_pts
-            prev_ts = ts
 
             # Foco (não toda hora)
             if (now - last_focus_t) >= FOCUS_EVERY_S:
@@ -554,25 +490,20 @@ def bot_loop(
             fruits_scored = []
             for i, d in enumerate(fruits):
                 cx, cy = cur_fruit_pts[i]
-                vx, vy = fruit_vels[i]
                 conf = float(getattr(d, "conf", 0.0))
-                fruits_scored.append((cy, conf, i, d, cx, cy, vx, vy))
+                fruits_scored.append((cy, conf, i, d, cx, cy))
             fruits_scored.sort(key=lambda t: (-t[0], -t[1]))
             
             top_candidates = []
-            for cy, conf, i, d, cx, cy2, vx, vy in fruits_scored[:max(3, min(6, len(fruits_scored)))]:
+            for cy, conf, i, d, cx, cy2 in fruits_scored[:max(3, min(6, len(fruits_scored)))]:
                 w, h = _det_wh(d)
                 area = w * h
-                speed = math.hypot(vx, vy)
                 top_candidates.append(
                     {
                         "cx": cx,
                         "cy": cy2,
                         "conf": conf,
                         "area": area,
-                        "vx": vx,
-                        "vy": vy,
-                        "speed": speed,
                     }
                 )
 
@@ -581,7 +512,6 @@ def bot_loop(
                 {
                     "seq": seq,
                     "age_ms": age * 1000.0,
-                    "dtv_ms": dtv * 1000.0,
                     "n_fruits_raw": len(fruits_raw),
                     "n_fruits_filtered": len(fruits),
                     "n_bombs": len(bombs),
@@ -610,17 +540,15 @@ def bot_loop(
                 for a in range(len(top)):
                     for b in range(a + 1, len(top)):
                         pairs_checked += 1
-                        _, confa, ia, da, cxa, cya, vxa, vya = top[a]
-                        _, confb, ib, db, cxb, cyb, vxb, vyb = top[b]
+                        _, confa, ia, da, cxa, cya = top[a]
+                        _, confb, ib, db, cxb, cyb = top[b]
 
                         dist_ab = math.hypot(cxb - cxa, cyb - cya)
                         if dist_ab < PAIR_MIN_DIST_PX or dist_ab > PAIR_MAX_DIST_PX:
                             pair_rejects["dist"] += 1
                             continue
-
-                        t_pred = age + PAIR_PARAMS["down_wait"] + PAIR_PARAMS["duration"] * PRED_DURATION_FRAC
-                        ax, ay = predict_point(cxa, cya, vxa, vya, t_pred)
-                        bx, by = predict_point(cxb, cyb, vxb, vyb, t_pred)
+                        ax, ay = cxa, cya
+                        bx, by = cxb, cyb
 
                         if not clamp_inside_window(ax, ay, region.width, region.height, WINDOW_MARGIN_PX):
                             pair_rejects["outside"] += 1
@@ -635,21 +563,7 @@ def bot_loop(
                             pair_rejects["recent"] += 1
                             continue
 
-                        # checa bombas previstas
-                        safe = True
-                        min_bomb_dist = None
-                        for k, bd in enumerate(bombs):
-                            bcx, bcy = cur_bomb_pts[k]
-                            bvx, bvy = bomb_vels[k]
-                            px, py = predict_point(bcx, bcy, bvx, bvy, t_pred)
-                            bw, bh = _det_wh(bd)
-                            safe_r = max(BOMB_PRED_SAFE_BASE_PX, int(BOMB_PRED_SAFE_DIAG_FACTOR * math.hypot(bw, bh)))
-                            dist = _dist_point_to_segment(px, py, ax, ay, bx, by)
-                            min_bomb_dist = dist if min_bomb_dist is None else min(min_bomb_dist, dist)
-                            if dist <= safe_r:
-                                safe = False
-                                break
-                        if not safe:
+                        if bombs and not _segment_is_bomb_safe(ax, ay, bx, by, bombs):
                             pair_rejects["bomb"] += 1
                             continue
 
@@ -667,13 +581,11 @@ def bot_loop(
                             best_pair_info = {
                                 "score": score,
                                 "dist_ab": dist_ab,
-                                "t_pred": t_pred,
                                 "ax": ax,
                                 "ay": ay,
                                 "bx": bx,
                                 "by": by,
                                 "overshoot": dyn_overshoot,
-                                "min_bomb_dist": min_bomb_dist,
                             }
 
             logger.log_event(
@@ -709,7 +621,6 @@ def bot_loop(
                             "seq": seq,
                             "action_ts": time.time(),
                             "age_ms": age * 1000.0,
-                            "dtv_ms": dtv * 1000.0,
                             "segment": (ax, ay, bx, by),
                             "midpoint": (midx, midy),
                             "overshoot_px": dyn_overshoot,
@@ -746,18 +657,8 @@ def bot_loop(
                 # -------------------------
                 # Fallback: 1 fruta
                 # -------------------------
-                _, conf0, i0, d0, cx, cy, vx, vy = fruits_scored[0]
-
-                speed = math.hypot(vx, vy)
-
-                # latência esperada até metade do swipe
-                # (age já inclui inferência, porque ts é do frame)
-                # base_params = SINGLE_FAST_PARAMS if speed > SPEED_FAST_THRESHOLD else SINGLE_UNKNOWN_PARAMS
-                # w0, h0 = _det_wh(d0)
-                # dyn_overshoot = max(OVERSHOOT_BASE_PX, int(OVERSHOOT_DIAG_FACTOR * math.hypot(w0, h0)))
-                # t_pred = age + base_params["down_wait"] + base_params["duration"] * PRED_DURATION_FRAC
-                t_pred = age + SINGLE_SHORT_PARAMS["down_wait"] + SINGLE_SHORT_PARAMS["duration"] * PRED_DURATION_FRAC
-                px, py = predict_point(cx, cy, vx, vy, t_pred)
+                _, _, _, _, cx, cy = fruits_scored[0]
+                px, py = cx, cy
 
                 if not clamp_inside_window(px, py, region.width, region.height, WINDOW_MARGIN_PX):
                     log_skip(
@@ -775,11 +676,7 @@ def bot_loop(
                     )
                     continue
 
-                # Direção: perpendicular à velocidade quando disponível
-                if speed > SPEED_DIR_THRESHOLD:
-                    ang = math.degrees(math.atan2(vy, vx)) + PERP_ANGLE_OFFSET_DEG
-                else:
-                    ang = DEFAULT_SLICE_ANGLE_DEG
+                ang = DEFAULT_SLICE_ANGLE_DEG
 
                 # Segmento pra recheck de bomba no último instante
                 ax = px - SEGMENT_OFFSET_PX
@@ -840,7 +737,6 @@ def bot_loop(
                         "seq": seq,
                         "action_ts": time.time(),
                         "age_ms": age * 1000.0,
-                        "dtv_ms": dtv * 1000.0,
                         "target_point": (px, py),
                         "angle_deg": ang,
                         "params": SINGLE_SHORT_PARAMS,
