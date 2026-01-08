@@ -56,22 +56,6 @@ SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro pa
     "duration": 0.07,
     "steps": 1,
 }
-PAIR_PARAMS = {               # params de slice para pares (length é reservado)
-    "length": 150,
-    "down_wait": 0.02,
-    "duration": 0.07,
-    "steps": 3,
-}
-PAIR_SLICE_PARAMS = {k: v for k, v in PAIR_PARAMS.items() if k != "length"}
-TOP_FRUITS_LIMIT = 1           # máximo de frutas consideradas para pares
-PAIR_MIN_DIST_PX = 9999          # distância mínima entre frutas do par
-PAIR_MAX_DIST_PX = 9999         # distância máxima entre frutas do par
-
-# Scoring do par
-PAIR_SCORE_Y_WEIGHT = 1.0
-PAIR_SCORE_CONF_WEIGHT = 260.0
-PAIR_SCORE_DIST_WEIGHT = 0.10
-PAIR_SCORE_MIN = -1e18
 
 # Segurança/margens
 WINDOW_MARGIN_PX = 14          # margem para clamp/slice dentro da janela
@@ -228,21 +212,10 @@ def bot_loop(
                 "recent_radius_px": RECENT_RADIUS_PX,
                 "predict_imgsz": PREDICT_IMGSZ,
                 "predict_iou_thres": PREDICT_IOU_THRES,
-                "top_fruits_limit": TOP_FRUITS_LIMIT,
             },
             "slice_params": {
                 "single_fast_params": SINGLE_FAST_PARAMS,
                 "single_unknown_params": SINGLE_UNKNOWN_PARAMS,
-                "pair_params": PAIR_PARAMS,
-                "pair_slice_params": PAIR_SLICE_PARAMS,
-            },
-            "pair_selection": {
-                "pair_min_dist_px": PAIR_MIN_DIST_PX,
-                "pair_max_dist_px": PAIR_MAX_DIST_PX,
-                "pair_score_y_weight": PAIR_SCORE_Y_WEIGHT,
-                "pair_score_conf_weight": PAIR_SCORE_CONF_WEIGHT,
-                "pair_score_dist_weight": PAIR_SCORE_DIST_WEIGHT,
-                "pair_score_min": PAIR_SCORE_MIN,
             },
             "safety_constants": {
                 "window_margin_px": WINDOW_MARGIN_PX,
@@ -519,141 +492,8 @@ def bot_loop(
                 },
             )
 
-            # -------------------------
-            # Tenta par (2 frutas)
-            # -------------------------
-            best_pair = None
-            best_score = PAIR_SCORE_MIN
-            top = fruits_scored[:TOP_FRUITS_LIMIT]
-            top_n = len(top)
-            pairs_total = top_n * (top_n - 1) // 2
-            pairs_checked = 0
-            pair_rejects = {
-                "dist": 0,
-                "outside": 0,
-                "recent": 0,
-                "bomb": 0,
-            }
-            best_pair_info = None
-
-            if len(top) >= 2:
-                for a in range(len(top)):
-                    for b in range(a + 1, len(top)):
-                        pairs_checked += 1
-                        _, confa, ia, da, cxa, cya = top[a]
-                        _, confb, ib, db, cxb, cyb = top[b]
-
-                        dist_ab = math.hypot(cxb - cxa, cyb - cya)
-                        if dist_ab < PAIR_MIN_DIST_PX or dist_ab > PAIR_MAX_DIST_PX:
-                            pair_rejects["dist"] += 1
-                            continue
-                        ax, ay = cxa, cya
-                        bx, by = cxb, cyb
-
-                        if not clamp_inside_window(ax, ay, region.width, region.height, WINDOW_MARGIN_PX):
-                            pair_rejects["outside"] += 1
-                            continue
-                        if not clamp_inside_window(bx, by, region.width, region.height, WINDOW_MARGIN_PX):
-                            pair_rejects["outside"] += 1
-                            continue
-
-                        midx = int((ax + bx) / 2)
-                        midy = int((ay + by) / 2)
-                        if is_recent(midx, midy, now):
-                            pair_rejects["recent"] += 1
-                            continue
-
-                        if bombs and not _segment_is_bomb_safe(ax, ay, bx, by, bombs):
-                            pair_rejects["bomb"] += 1
-                            continue
-
-                        avg_y = 0.5 * (ay + by)
-                        cmin = min(confa, confb)
-                        score = (avg_y * PAIR_SCORE_Y_WEIGHT) + (cmin * PAIR_SCORE_CONF_WEIGHT) - (dist_ab * PAIR_SCORE_DIST_WEIGHT)
-
-                        if score > best_score:
-                            wa, ha = _det_wh(da)
-                            wb, hb = _det_wh(db)
-                            avg_diag = 0.5 * (math.hypot(wa, ha) + math.hypot(wb, hb))
-                            dyn_overshoot = max(OVERSHOOT_BASE_PX, int(OVERSHOOT_DIAG_FACTOR * avg_diag))
-                            best_score = score
-                            best_pair = (ax, ay, bx, by, midx, midy, dyn_overshoot)
-                            best_pair_info = {
-                                "score": score,
-                                "dist_ab": dist_ab,
-                                "ax": ax,
-                                "ay": ay,
-                                "bx": bx,
-                                "by": by,
-                                "overshoot": dyn_overshoot,
-                            }
-
-            logger.log_event(
-                "pair_eval",
-                {
-                    "seq": seq,
-                    "top_n": top_n,
-                    "pairs_total": pairs_total,
-                    "pairs_checked": pairs_checked,
-                    "rejections": pair_rejects,
-                    "best_candidate": best_pair_info,
-                },
-            )
 
             try:
-                if best_pair is not None:
-                    ax, ay, bx, by, midx, midy, dyn_overshoot = best_pair
-
-                    if not last_instant_bomb_check(ax, ay, bx, by):
-                        log_skip(
-                            "bomb",
-                            seq,
-                            segment=(ax, ay, bx, by),
-                            check="instant",
-                        )
-                        continue
-                    action_id += 1
-                    logger.log_event(
-                        "action",
-                        {
-                            "kind": "pair",
-                            "action_id": action_id,
-                            "seq": seq,
-                            "action_ts": time.time(),
-                            "age_ms": age * 1000.0,
-                            "segment": (ax, ay, bx, by),
-                            "midpoint": (midx, midy),
-                            "overshoot_px": dyn_overshoot,
-                            "params": PAIR_PARAMS,
-                            "bomb_check": {
-                                "instant_safe": True,
-                                "bombs_n": len(bombs),
-                            },
-                            "recent": {
-                                "recent_targets_count": len(recent_targets),
-                                "recent_ttl_s": RECENT_TTL_S,
-                                "recent_radius_px": RECENT_RADIUS_PX,
-                            },
-                        },
-                    )
-
-                    controller.slice_segment_in_window(
-                        ax, ay, bx, by,
-                        ScreenOffset(region.left, region.top),
-                        window_w=region.width,
-                        window_h=region.height,
-                        margin=WINDOW_MARGIN_PX,
-                        overshoot=dyn_overshoot,
-                        **PAIR_SLICE_PARAMS
-                    )
-
-                    last_action_t = time.time()
-                    add_recent(ax, ay, last_action_t)
-                    add_recent(bx, by, last_action_t)
-                    add_recent(midx, midy, last_action_t)
-                    post_action_observe(seq, region, [(midx, midy)])
-                    continue
-
                 # -------------------------
                 # Fallback: 1 fruta
                 # -------------------------
