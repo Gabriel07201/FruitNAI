@@ -268,14 +268,20 @@ class YoloOnnxPredictor:
         out = frame_bgr.copy()
         for d in dets:
             x1, y1, x2, y2 = int(d.x1), int(d.y1), int(d.x2), int(d.y2)
-            cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            if d.cls == 1:
+                color = (0, 0, 255)
+            else:
+                color = (0, 255, 0)
+
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 out,
                 f"cls={d.cls} conf={d.conf:.2f}",
                 (x1, max(0, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (0, 255, 0),
+                color,
                 2,
                 cv2.LINE_AA,
             )
