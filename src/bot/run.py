@@ -1,4 +1,7 @@
 import math
+import os
+import platform
+import sys
 import threading
 import time
 import cv2
@@ -10,6 +13,7 @@ from .state import BotState
 from .capture import set_dpi_awareness, GameCapture, list_visible_window_titles
 from .predictor import YoloOnnxPredictor
 from .controller import Controller, ScreenOffset
+from .logger import RunLogger
 
 
 TITLE_SUBSTRING = "Fruit Ninja"
@@ -109,6 +113,9 @@ PERP_ANGLE_OFFSET_DEG = 90.0
 # Controller
 CONTROLLER_PAUSE_S = 0.0       # pausa interna do controlador
 
+# Logger
+FRAME_SAMPLE_EVERY = 30
+
 
 def _det_center(d):
     return int((d.x1 + d.x2) / 2), int((d.y1 + d.y2) / 2)
@@ -184,6 +191,17 @@ def bot_loop(
     onnx_path: str = ONNX_PATH,
 ):
     set_dpi_awareness()
+    start_ts = time.time()
+    logger = RunLogger(
+        run_metadata={
+            'pid': os.getpid(),
+            'python': sys.version,
+            'platform': platform.platform(),
+            'title_substring': title_substring,
+            'onnx_path': onnx_path,
+            'start_ts': start_ts,
+        },
+    )
 
     def on_press(key):
         if key == keyboard.Key.f2:
@@ -214,6 +232,46 @@ def bot_loop(
         conf_thres=MIN_FRUIT_CONF,
         iou_thres=PREDICT_IOU_THRES,
         class_agnostic=False,
+    )
+    
+    logger.log_event(
+        'config',
+        {
+            'tunning': {
+                'max_det_age_s': MAX_DET_AGE_S,
+                'min_action_interval_s': MIN_ACTION_INTERVAL_S,
+                'focus_every_s': FOCUS_EVERY_S,
+                'min_fruit_conf': MIN_FRUIT_CONF,
+                'min_fruit_area': MIN_FRUIT_AREA,
+                'recent_ttl_s': RECENT_TTL_S,
+                'recent_radius_px': RECENT_RADIUS_PX,
+                'predict_imgsz': PREDICT_IMGSZ,
+                'predict_iou_thres': PREDICT_IOU_THRES,
+                'single_fast_params': SINGLE_FAST_PARAMS,
+                'single_unknown_params': SINGLE_UNKNOWN_PARAMS,
+                'pair_params': PAIR_PARAMS,
+                'pred_duration_frac': PRED_DURATION_FRAC,
+                'speed_fast_threshold': SPEED_FAST_THRESHOLD,
+                'speed_dir_threshold': SPEED_DIR_THRESHOLD,
+                'top_fruits_limit': TOP_FRUITS_LIMIT,
+                'pair_min_dist_px': PAIR_MIN_DIST_PX,
+                'pair_max_dist_px': PAIR_MAX_DIST_PX,
+                'pair_score_y_weight': PAIR_SCORE_Y_WEIGHT,
+                'pair_score_conf_weight': PAIR_SCORE_CONF_WEIGHT,
+                'pair_score_dist_weight': PAIR_SCORE_DIST_WEIGHT,
+                'window_margin_px': WINDOW_MARGIN_PX,
+                'focus_point_x': FOCUS_POINT_X,
+                'focus_point_y': FOCUS_POINT_Y,
+                'segment_offset_px': SEGMENT_OFFSET_PX,
+                'overshoot_base_px': OVERSHOOT_BASE_PX,
+                'overshoot_diag_factor': OVERSHOOT_DIAG_FACTOR,
+                'bomb_safe_base_px': BOMB_SAFE_BASE_PX,
+                'bomb_safe_diag_factor': BOMB_SAFE_DIAG_FACTOR,
+                'instant_safe_base_px': INSTANT_SAFE_BASE_PX,
+                'bomb_pred_safe_base_px': BOMB_PRED_SAFE_BASE_PX,
+                'bomb_pred_safe_diag_factor': BOMB_PRED_SAFE_DIAG_FACTOR,
+            },
+        },
     )
 
 
@@ -279,17 +337,29 @@ def bot_loop(
             age = now - ts  # ts é do frame
             if age > MAX_DET_AGE_S:
                 # det velha -> não age (evita cortar "no passado")
+                logger.log_event(
+                    'skip',
+                    {'reason': 'old_detection', 'age_s': age, 'max_det_age_s': MAX_DET_AGE_S, 'seq': seq}
+                )
                 time.sleep(SLEEP_OLD_DET_S)
                 continue
 
             # cooldown global
             if (now - last_action_t) < MIN_ACTION_INTERVAL_S:
+                logger.log_event(
+                    'skip',
+                    {'reason': 'action_cooldown', 'time_since_last_action_s': now - last_action_t, 'min_action_interval_s': MIN_ACTION_INTERVAL_S, 'seq': seq}
+                )
                 time.sleep(SLEEP_ACTION_COOLDOWN_S)
                 continue
 
             fruits_raw = [d for d in dets if int(getattr(d, "cls", -1)) == FRUIT_CLASS_ID]
             bombs = [d for d in dets if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
             if not fruits_raw:
+                logger.log_event(
+                    'skip',
+                    {'reason': 'no_fruits_detected', 'seq': seq}
+                )
                 continue
 
             # Filtra frutas (conf/area)
@@ -305,6 +375,10 @@ def bot_loop(
                 fruits.append(d)
 
             if not fruits:
+                logger.log_event(
+                    'skip',
+                    {'reason': 'no_fruits_after_filter', 'num_fruits_raw': len(fruits_raw), 'seq': seq}
+                )
                 continue
 
             # Estima velocidades
@@ -334,6 +408,15 @@ def bot_loop(
                     y=FOCUS_POINT_Y,
                 )
                 last_focus_t = now
+                logger.log_event(
+                    'focus',
+                    {
+                        'focus_point': (FOCUS_POINT_X, FOCUS_POINT_Y),
+                        'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                        'focus_every': FOCUS_EVERY_S,
+                        'seq': seq,
+                    },
+                )
 
             # Ordena frutas por: mais embaixo + maior conf
             fruits_scored = []
@@ -373,6 +456,15 @@ def bot_loop(
                         midx = int((ax + bx) / 2)
                         midy = int((ay + by) / 2)
                         if is_recent(midx, midy, now):
+                            logger.log_event(
+                                'skip',
+                                {
+                                    'reason': 'recent_target_pair',
+                                    'pair_centroid': (midx, midy),
+                                    'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                                    'seq': seq,
+                                }
+                            )
                             continue
 
                         # checa bombas previstas
@@ -387,6 +479,15 @@ def bot_loop(
                                 safe = False
                                 break
                         if not safe:
+                            logger.log_event(
+                                'skip',
+                                {
+                                    'reason': 'bomb_predicted_in_path',
+                                    'pair_segment': (ax, ay, bx, by),
+                                    'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                                    'seq': seq,
+                                }
+                            )
                             continue
 
                         avg_y = 0.5 * (ay + by)
@@ -406,7 +507,40 @@ def bot_loop(
                     ax, ay, bx, by, midx, midy, dyn_overshoot = best_pair
 
                     if not last_instant_bomb_check(ax, ay, bx, by):
+                        logger.log_event(
+                            'skip',
+                            {
+                                'reason': 'recent_target_pair_instant_bomb_check_failed',
+                                'pair_segment': (ax, ay, bx, by),
+                                'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                                'seq': seq,
+                            }
+                        )
                         continue
+                    
+                    logger.log_event(
+                        'decision',
+                        {
+                            'seq': seq,
+                            'type': 'pair_slice',
+                            'age_s': age,
+                            'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                            'slice_segment': (ax, ay, bx, by),
+                            'midpoint': (midx, midy),
+                            'overshoot_px': dyn_overshoot,
+                        }
+                    )
+                    logger.log_event(
+                        'action',
+                        {
+                            'seq': seq,
+                            'type': 'pair_slice',
+                            'slice_segment': (ax, ay, bx, by),
+                            'midpoint': (midx, midy),
+                            'overshoot_px': dyn_overshoot,
+                            'params': PAIR_PARAMS,
+                        },
+                    )
 
                     controller.slice_segment_in_window(
                         ax, ay, bx, by,
@@ -420,6 +554,15 @@ def bot_loop(
 
                     last_action_t = time.time()
                     add_recent(midx, midy, last_action_t)
+                    logger.log_event(
+                        'post_action',
+                        {
+                            'seq': seq,
+                            'type': 'pair_slice',
+                            'time': last_action_t,
+                            'recent_targets_count': len(recent_targets),
+                        },
+                    )
                     continue
 
                 # -------------------------
@@ -438,9 +581,27 @@ def bot_loop(
                 px, py = predict_point(cx, cy, vx, vy, t_pred)
 
                 if not clamp_inside_window(px, py, region.width, region.height, WINDOW_MARGIN_PX):
+                    logger.log_event(
+                        'skip',
+                        {
+                            'reason': 'predicted_point_out_of_bounds',
+                            'predicted_point': (px, py),
+                            'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                            'seq': seq,
+                        }
+                    )
                     continue
 
                 if is_recent(px, py, now):
+                    logger.log_event(
+                        'skip',
+                        {
+                            'reason': 'recent_target_single',
+                            'target_point': (px, py),
+                            'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                            'seq': seq,
+                        }
+                    )
                     continue
 
                 # Direção: perpendicular à velocidade quando disponível
@@ -455,7 +616,41 @@ def bot_loop(
                 bx = px + SEGMENT_OFFSET_PX
                 by = py - SEGMENT_OFFSET_PX
                 if not last_instant_bomb_check(ax, ay, bx, by):
+                    logger.log_event(
+                        'skip',
+                        {
+                            'reason': 'single_instant_bomb_check_failed',
+                            'target_point': (px, py),
+                            'segment_checked': (ax, ay, bx, by),
+                            'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                            'seq': seq,
+                        }
+                    )
                     continue
+                
+                logger.log_event(
+                    'decision',
+                    {
+                        'seq': seq,
+                        'type': 'single_slice',
+                        'age_s': age,
+                        'region': {'left': region.left, 'top': region.top, 'width': region.width, 'height': region.height},
+                        'target_point': (px, py),
+                        'angle_deg': ang,
+                        'overshoot_px': dyn_overshoot,
+                    },
+                )
+                logger.log_event(
+                    'action',
+                    {
+                        'seq': seq,
+                        'type': 'single_slice',
+                        'target_point': (px, py),
+                        'angle_deg': ang,
+                        'overshoot_px': dyn_overshoot,
+                        'params': base_params,
+                    },
+                )
 
                 controller.slice_in_window(
                     px, py,
@@ -470,12 +665,29 @@ def bot_loop(
 
                 last_action_t = time.time()
                 add_recent(px, py, last_action_t)
+                logger.log_event(
+                    'post_action',
+                    {
+                        'seq': seq,
+                        'type': 'single_slice',
+                        'time': last_action_t,
+                        'recent_targets_count': len(recent_targets),
+                    },
+                )
 
             except pyautogui.FailSafeException:
+                logger.log_event(
+                    'shutdown',
+                    {'reason': 'pyautogui_failsafe_triggered', 'seq': seq},
+                )
                 state.shutdown.set()
                 break
             except Exception as e:
                 print("Erro no action_worker:", repr(e))
+                logger.log_event(
+                    'error',
+                    {'reason': 'exception_in_action_worker', 'exception': repr(e), 'seq': seq},
+                )
                 time.sleep(SLEEP_WORKER_ERROR_S)
 
     action_thread = threading.Thread(target=action_worker, daemon=True)
@@ -500,6 +712,7 @@ def bot_loop(
                 latest_region = region
                 latest_ts = t_frame     # <<<< era t1; agora é o frame
                 latest_seq += 1
+                seq = latest_seq
 
             # Debug
             vis = predictor.draw(frame, dets)
@@ -524,6 +737,25 @@ def bot_loop(
             )
 
             cv2.imshow("bot_debug", vis)
+            
+            if seq % FRAME_SAMPLE_EVERY == 0:
+                logger.log_event(
+                    "frame",
+                    {
+                        "seq": seq,
+                        "frame_ts": t_frame,
+                        "region": {
+                            "left": region.left,
+                            "top": region.top,
+                            "width": region.width,
+                            "height": region.height,
+                        },
+                        "dets": len(dets),
+                        "fps": fps,
+                        "infer_ms": infer_ms,
+                        "status": status,
+                    },
+                )
 
             k = cv2.waitKey(DEBUG_WAITKEY_MS) & 0xFF
             if k == ord("q"):
@@ -533,6 +765,7 @@ def bot_loop(
     finally:
         listener.stop()
         cv2.destroyAllWindows()
+        logger.close()
 
 
 def main():
