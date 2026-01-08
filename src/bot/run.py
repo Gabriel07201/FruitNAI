@@ -4,6 +4,7 @@ import platform
 import sys
 import threading
 import time
+import concurrent.futures
 import cv2
 import pyautogui
 
@@ -170,6 +171,7 @@ def bot_loop(
     capture = GameCapture(title_substring=title_substring, bring_foreground=True)
 
     controller = Controller(pause=CONTROLLER_PAUSE_S, fail_safe=True)
+    post_action_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     # Shared state
     lock = threading.Lock()
@@ -586,7 +588,7 @@ def bot_loop(
 
                 last_action_t = time.time()
                 add_recent(px, py, last_action_t)
-                post_action_observe(seq, region, [(px, py)])
+                post_action_executor.submit(post_action_observe, seq, region, [(px, py)])
 
             except pyautogui.FailSafeException:
                 logger.log_event(
