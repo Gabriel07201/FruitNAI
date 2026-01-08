@@ -29,9 +29,9 @@ MIN_ACTION_INTERVAL_S = 0.06  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 2.50          # refoca a janela a cada N segundos
 
 MIN_FRUIT_CONF = 0.35         # confiança mínima para considerar fruta
-MIN_FRUIT_AREA = 800          # área mínima (px^2) para filtrar frutas pequenas
-RECENT_TTL_S = 0.16           # bloqueia repetir corte no mesmo lugar por N segundos
-RECENT_RADIUS_PX = 85         # raio de bloqueio para cortes recentes
+MIN_FRUIT_AREA = 1600          # área mínima (px^2) para filtrar frutas pequenas
+RECENT_TTL_S = 0.30           # bloqueia repetir corte no mesmo lugar por N segundos
+RECENT_RADIUS_PX = 95         # raio de bloqueio para cortes recentes
 
 # Predictor
 PREDICT_IMGSZ = 640           # tamanho da imagem para o modelo
@@ -731,6 +731,8 @@ def bot_loop(
                     )
 
                     last_action_t = time.time()
+                    add_recent(ax, ay, last_action_t)
+                    add_recent(bx, by, last_action_t)
                     add_recent(midx, midy, last_action_t)
                     post_action_observe(seq, region, [(midx, midy)])
                     continue
