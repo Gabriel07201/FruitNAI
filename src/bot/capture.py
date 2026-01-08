@@ -4,36 +4,10 @@ from typing import Optional, List
 
 import numpy as np
 import cv2
-from mss import mss
+import dxcam
 
 import win32gui
 import win32con
-
-
-def set_dpi_awareness() -> None:
-    """
-    Evita coordenadas erradas quando a escala do Windows != 100%.
-    """
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2) # PROCESS_PER_MONITOR_DPI_AWARE
-    except Exception:
-        try:
-            import ctypes
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-
-@dataclass(frozen=True)
-class WindowRegion:
-    left: int
-    top: int
-    width: int
-    height: int
-
-    def to_mss(self) -> dict:
-        return {"left": self.left, "top": self.top, "width": self.width, "height": self.height}
 
 
 def list_visible_window_titles(limit: int = 60) -> List[str]:
@@ -47,6 +21,13 @@ def list_visible_window_titles(limit: int = 60) -> List[str]:
 
     win32gui.EnumWindows(enum_handler, None)
     return titles[:limit]
+
+@dataclass(frozen=True)
+class WindowRegion:
+    left: int
+    top: int
+    width: int
+    height: int
 
 
 class WindowLocator:
@@ -97,12 +78,24 @@ class WindowLocator:
 
 
 class ScreenGrabber:
-    def __init__(self):
-        self._sct = mss()
+    def __init__(self, output_idx: int = 0, target_fps: int = 60):
+        self._camera = dxcam.create(output_idx=output_idx)
+        if self._camera is None:
+            raise RuntimeError("Falha ao inicializar DXCAM.")
+        self._camera.start(target_fps=target_fps)
 
     def grab_bgr(self, region: WindowRegion) -> np.ndarray:
-        frame = np.array(self._sct.grab(region.to_mss()))  # BGRA
-        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        left = region.left
+        top = region.top
+        right = left + region.width
+        bottom = top + region.height
+        frame = self._camera.grab(region=(left, top, right, bottom))
+        if frame is None:
+            raise RuntimeError("Falha ao capturar frame via DXCAM.")
+        frame = np.asarray(frame)
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        return frame
 
 
 class GameCapture:

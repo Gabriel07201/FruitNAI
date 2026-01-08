@@ -11,7 +11,7 @@ import pyautogui
 from pynput import keyboard
 
 from .state import BotState
-from .capture import set_dpi_awareness, GameCapture, list_visible_window_titles
+from .capture import GameCapture, list_visible_window_titles
 from .predictor import YoloOnnxPredictor
 from .controller import Controller, ScreenOffset
 from .logger import RunLogger
@@ -141,7 +141,6 @@ def bot_loop(
     title_substring: str = TITLE_SUBSTRING,
     onnx_path: str = ONNX_PATH,
 ):
-    set_dpi_awareness()
     start_ts = time.time()
     logger = RunLogger()
     logger.log_event(
@@ -357,7 +356,10 @@ def bot_loop(
             return _segment_is_bomb_safe(ax, ay, bx, by, bombs2, base_safe_px=INSTANT_SAFE_BASE_PX)
 
         def clamp_inside_window(x, y, w, h, margin):
-            return (margin <= x <= (w - margin)) and (margin <= y <= (h - margin))
+            clamped_x = min(max(x, margin), w - margin)
+            clamped_y = min(max(y, margin), h - margin)
+            clamped = (clamped_x != x) or (clamped_y != y)
+            return clamped_x, clamped_y, clamped
 
         while not state.shutdown.is_set():
             if not state.running.is_set():
@@ -487,6 +489,48 @@ def bot_loop(
 
             prev_fruit_obs = [(pt[0], pt[1], ts) for pt in cur_fruit_pts]
             
+            target_current = (cx, cy)
+            target_pred = (px, py)
+            t_cross_s = action_delay_s
+            infer_ms_last = infer_ms
+            gesture = {
+                "down_wait": SINGLE_SHORT_PARAMS["down_wait"],
+                "duration": SINGLE_SHORT_PARAMS["duration"],
+                "steps": SINGLE_SHORT_PARAMS["steps"],
+                "length": SINGLE_SHORT_PARAMS["length"],
+                "angle_deg": DEFAULT_SLICE_ANGLE_DEG,
+            }
+            clamped_x, clamped_y, clamped = clamp_inside_window(
+                px,
+                py,
+                region.width,
+                region.height,
+                WINDOW_MARGIN_PX,
+            )
+            ax = px - SEGMENT_OFFSET_PX
+            ay = py + SEGMENT_OFFSET_PX
+            bx = px + SEGMENT_OFFSET_PX
+            by = py - SEGMENT_OFFSET_PX
+            segment_for_bomb = (ax, ay, bx, by)
+
+            nearest_center = None
+            dist_to_pred = None
+            dist_to_current = None
+            if cur_fruit_pts:
+                nx, ny = min(
+                    cur_fruit_pts,
+                    key=lambda p: (p[0] - px) * (p[0] - px) + (p[1] - py) * (p[1] - py),
+                )
+                nearest_center = (nx, ny)
+                dist_to_pred = math.hypot(nx - px, ny - py)
+                dist_to_current = math.hypot(nx - cx, ny - cy)
+
+            speed = math.hypot(vx, vy)
+            if speed > 0.0:
+                proj_along_v = ((px - cx) * vx + (py - cy) * vy) / speed
+            else:
+                proj_along_v = 0.0
+            
             top_candidates = []
             for cy, conf, i, d, cx, cy2 in fruits_scored[:max(3, min(6, len(fruits_scored)))]:
                 w, h = _det_wh(d)
@@ -509,7 +553,21 @@ def bot_loop(
                     "n_fruits_filtered": len(fruits),
                     "n_bombs": len(bombs),
                     "pred_dt_s": dt_pred,
-                    "pred_point": (px, py),
+                    "target_current": target_current,
+                    "target_pred": target_pred,
+                    "t_cross_s": t_cross_s,
+                    "infer_ms_last": infer_ms_last,
+                    "delay_s": action_delay_s,
+                    "gesture": gesture,
+                    "clamped": clamped,
+                    "segment_for_bomb": segment_for_bomb,
+                    "nearest_center": nearest_center,
+                    "dist_to_pred": dist_to_pred,
+                    "dist_to_current": dist_to_current,
+                    "vx": vx,
+                    "vy": vy,
+                    "speed": speed,
+                    "proj_along_v": proj_along_v,
                     "top_candidates": top_candidates,
                 },
             )
@@ -519,11 +577,15 @@ def bot_loop(
                 # -------------------------
                 # Fallback: 1 fruta
                 # -------------------------
-                if not clamp_inside_window(px, py, region.width, region.height, WINDOW_MARGIN_PX):
+                if clamped:
                     log_skip(
                         "outside",
                         seq,
-                        predicted_point=(px, py),
+                        target_pred=target_pred,
+                        segment_for_bomb=segment_for_bomb,
+                        clamped=clamped,
+                        t_cross_s=t_cross_s,
+                        infer_ms_last=infer_ms_last,
                     )
                     continue
 
@@ -531,24 +593,26 @@ def bot_loop(
                     log_skip(
                         "recent",
                         seq,
-                        target_point=(px, py),
+                        target_pred=target_pred,
+                        segment_for_bomb=segment_for_bomb,
+                        clamped=clamped,
+                        t_cross_s=t_cross_s,
+                        infer_ms_last=infer_ms_last,
                     )
                     continue
 
                 ang = DEFAULT_SLICE_ANGLE_DEG
 
                 # Segmento pra recheck de bomba no último instante
-                ax = px - SEGMENT_OFFSET_PX
-                ay = py + SEGMENT_OFFSET_PX
-                bx = px + SEGMENT_OFFSET_PX
-                by = py - SEGMENT_OFFSET_PX
                 if not last_instant_bomb_check(ax, ay, bx, by):
                     log_skip(
                         "bomb",
                         seq,
-                        target_point=(px, py),
-                        segment=(ax, ay, bx, by),
-                        check="instant",
+                        target_pred=target_pred,
+                        segment_for_bomb=segment_for_bomb,
+                        clamped=clamped,
+                        t_cross_s=t_cross_s,
+                        infer_ms_last=infer_ms_last,
                     )
                     continue
 
@@ -561,7 +625,24 @@ def bot_loop(
                         "seq": seq,
                         "action_ts": time.time(),
                         "age_ms": age * 1000.0,
-                        "target_point": (px, py),
+                        "target_current": target_current,
+                        "target_pred": target_pred,
+                        "t_cross_s": t_cross_s,
+                        "infer_ms_last": infer_ms_last,
+                        "delay_s": action_delay_s,
+                        "gesture": {
+                            **SINGLE_SHORT_PARAMS,
+                            "angle_deg": ang,
+                        },
+                        "clamped": clamped,
+                        "segment_for_bomb": segment_for_bomb,
+                        "nearest_center": nearest_center,
+                        "dist_to_pred": dist_to_pred,
+                        "dist_to_current": dist_to_current,
+                        "vx": vx,
+                        "vy": vy,
+                        "speed": speed,
+                        "proj_along_v": proj_along_v,
                         "angle_deg": ang,
                         "params": SINGLE_SHORT_PARAMS,
                         "bomb_check": {
