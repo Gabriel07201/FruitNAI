@@ -17,7 +17,7 @@ from .logger import RunLogger
 
 
 TITLE_SUBSTRING = "Fruit Ninja"
-ONNX_PATH = "models/runs/fruitninja_yolo11n/weights/best.onnx"
+ONNX_PATH = "models/runs/fruitninja_yolo11n2/weights/best.onnx"
 
 FRUIT_CLASS_ID = 0
 BOMB_CLASS_ID = 1
@@ -25,31 +25,19 @@ BOMB_CLASS_ID = 1
 # Configuração - tuning)
 # Detecção/tempo
 MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no passado)
-MIN_ACTION_INTERVAL_S = 0.01  # intervalo mínimo entre cortes
-FOCUS_EVERY_S = 2.50          # refoca a janela a cada N segundos
+MIN_ACTION_INTERVAL_S = 0.0  # intervalo mínimo entre cortes
+FOCUS_EVERY_S = 5          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.5         # confiança mínima para considerar fruta
-MIN_FRUIT_AREA = 1600          # área mínima (px^2) para filtrar frutas pequenas
+MIN_FRUIT_CONF = 0.7         # confiança mínima para considerar fruta
+MIN_FRUIT_AREA = 1800          # área mínima (px^2) para filtrar frutas pequenas
 RECENT_TTL_S = 0.1           # bloqueia repetir corte no mesmo lugar por N segundos
-RECENT_RADIUS_PX = 95         # raio de bloqueio para cortes recentes
+RECENT_RADIUS_PX = 50         # raio de bloqueio para cortes recentes
 
 # Predictor
 PREDICT_IMGSZ = 640           # tamanho da imagem para o modelo
-PREDICT_IOU_THRES = 0.45      # IoU para NMS
+PREDICT_IOU_THRES = 0.50      # IoU para NMS
 
 # Parâmetros da ação
-SINGLE_FAST_PARAMS = {        # slice rápido quando velocidade estimada é alta
-    "length": 120,
-    "down_wait": 0.01,
-    "duration": 0.05,
-    "steps": 2,
-}
-SINGLE_UNKNOWN_PARAMS = {     # slice mais generoso quando velocidade é desconhecida
-    "length": 150,
-    "down_wait": 0.02,
-    "duration": 0.07,
-    "steps": 2,
-}
 SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro para fora)
     "length": 80,
     "down_wait": 0.015,
@@ -214,8 +202,7 @@ def bot_loop(
                 "predict_iou_thres": PREDICT_IOU_THRES,
             },
             "slice_params": {
-                "single_fast_params": SINGLE_FAST_PARAMS,
-                "single_unknown_params": SINGLE_UNKNOWN_PARAMS,
+                "single_short_params": SINGLE_SHORT_PARAMS,
             },
             "safety_constants": {
                 "window_margin_px": WINDOW_MARGIN_PX,
@@ -534,41 +521,6 @@ def bot_loop(
                     continue
 
                 action_id += 1
-                # logger.log_event(
-                #     "action",
-                #     {
-                #         "kind": "single",
-                #         "action_id": action_id,
-                #         "seq": seq,
-                #         "action_ts": time.time(),
-                #         "age_ms": age * 1000.0,
-                #         "dtv_ms": dtv * 1000.0,
-                #         "target_point": (px, py),
-                #         "angle_deg": ang,
-                #         "overshoot_px": dyn_overshoot,
-                #         "params": base_params,
-                #         "bomb_check": {
-                #             "instant_safe": True,
-                #             "bombs_n": len(bombs),
-                #         },
-                #         "recent": {
-                #             "recent_targets_count": len(recent_targets),
-                #             "recent_ttl_s": RECENT_TTL_S,
-                #             "recent_radius_px": RECENT_RADIUS_PX,
-                #         },
-                #     },
-                # )
-
-                # controller.slice_in_window(
-                #     px, py,
-                #     ScreenOffset(region.left, region.top),
-                #     window_w=region.width,
-                #     window_h=region.height,
-                #     margin=WINDOW_MARGIN_PX,
-                #     angle_deg=ang,
-                #     overshoot=dyn_overshoot,
-                #     **base_params
-                # )
                 logger.log_event(
                     "action",
                     {

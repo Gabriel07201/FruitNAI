@@ -3,7 +3,13 @@ data/frames_raw/**
 data/labels/**
 data/artifacts/**
 datasets/**
-runs
+models/runs/**/*.png
+models/runs/**/*.jpg
+models/runs/**/*.jpeg
+notebooks/runs/**/*.png
+notebooks/runs/**/*.jpg
+notebooks/runs/**/*.jpeg
+
 logs/**
 
 __pycache__/
