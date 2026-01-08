@@ -4,6 +4,7 @@ data/labels/**
 data/artifacts/**
 datasets/**
 runs
+logs/**
 
 __pycache__/
 *.avi
