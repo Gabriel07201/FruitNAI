@@ -141,7 +141,9 @@ class ScreenGrabber:
     def __init__(self, output_idx: int = 0, target_fps: int = 60):
         self._output_idx = output_idx
         self._target_fps = target_fps
-        self._camera = dxcam.create(output_idx=output_idx)
+        self._output_color = "BGRA"
+        # DXCAM deve entregar BGRA para conversão consistente em BGR.
+        self._camera = dxcam.create(output_idx=output_idx, output_color=self._output_color)
         if self._camera is None:
             raise RuntimeError("Falha ao inicializar DXCAM.")
         self._camera.start(target_fps=target_fps)
@@ -158,7 +160,7 @@ class ScreenGrabber:
             time.sleep(0.01)
         else:
             self._camera.stop()
-            self._camera = dxcam.create(output_idx=self._output_idx)
+            self._camera = dxcam.create(output_idx=self._output_idx, output_color=self._output_color)
             if self._camera is None:
                 raise RuntimeError("Falha ao reinicializar DXCAM.")
             self._camera.start(target_fps=self._target_fps)
@@ -174,7 +176,10 @@ class ScreenGrabber:
                 )
         frame = np.asarray(frame)
         if frame.ndim == 3 and frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if self._output_color == "BGRA":
+                return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if self._output_color == "RGBA":
+                return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         return frame
 
 
