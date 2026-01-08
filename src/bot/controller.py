@@ -204,6 +204,56 @@ class Controller:
             duration=duration,
             steps=steps,
         )
+        
+    def slice_short_from_center_in_window(
+        self,
+        x: int,
+        y: int,
+        offset: ScreenOffset,
+        *,
+        window_w: Optional[int] = None,
+        window_h: Optional[int] = None,
+        margin: int = 12,
+        dx: int | None = None,
+        dy: int | None = None,
+        length: int = 80,
+        angle_deg: float = -45.0,
+        down_wait: float = 0.04,
+        duration: float = 0.08,
+        steps: int = 1,
+    ):
+        """
+        Slice curto a partir do centro (x, y) até um ponto na direção desejada.
+        """
+        if dx is not None or dy is not None:
+            ddx = float(dx or 0)
+            ddy = float(dy or 0)
+            if ddx == 0 and ddy == 0:
+                ddx, ddy = float(length), 0.0
+        else:
+            rad = math.radians(angle_deg)
+            ddx = math.cos(rad)
+            ddy = math.sin(rad)
+
+        mag = math.hypot(ddx, ddy)
+        if mag < 1e-6:
+            ddx, ddy = 1.0, 0.0
+            mag = 1.0
+
+        ux = ddx / mag
+        uy = ddy / mag
+        x2 = int(x + ux * length)
+        y2 = int(y + uy * length)
+
+        self.slice_line_in_window(
+            x, y, x2, y2, offset,
+            window_w=window_w,
+            window_h=window_h,
+            margin=margin,
+            down_wait=down_wait,
+            duration=duration,
+            steps=steps,
+        )
 
     def slice_segment_in_window(
         self,

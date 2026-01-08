@@ -25,12 +25,12 @@ BOMB_CLASS_ID = 1
 # Configuração - tuning)
 # Detecção/tempo
 MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no passado)
-MIN_ACTION_INTERVAL_S = 0.06  # intervalo mínimo entre cortes
+MIN_ACTION_INTERVAL_S = 0.01  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 2.50          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.35         # confiança mínima para considerar fruta
+MIN_FRUIT_CONF = 0.5         # confiança mínima para considerar fruta
 MIN_FRUIT_AREA = 1600          # área mínima (px^2) para filtrar frutas pequenas
-RECENT_TTL_S = 0.30           # bloqueia repetir corte no mesmo lugar por N segundos
+RECENT_TTL_S = 0.1           # bloqueia repetir corte no mesmo lugar por N segundos
 RECENT_RADIUS_PX = 95         # raio de bloqueio para cortes recentes
 
 # Predictor
@@ -50,6 +50,12 @@ SINGLE_UNKNOWN_PARAMS = {     # slice mais generoso quando velocidade é desconh
     "duration": 0.07,
     "steps": 2,
 }
+SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro para fora)
+    "length": 80,
+    "down_wait": 0.015,
+    "duration": 0.07,
+    "steps": 1,
+}
 PAIR_PARAMS = {               # params de slice para pares (length é reservado)
     "length": 150,
     "down_wait": 0.02,
@@ -62,9 +68,9 @@ PRED_DURATION_FRAC = 0.7       # fração da duração usada para prever posiç�
 # Velocidade/seleção
 SPEED_FAST_THRESHOLD = 40.0    # troca para slice rápido acima desse valor
 SPEED_DIR_THRESHOLD = 60.0     # usa direção da velocidade acima desse valor
-TOP_FRUITS_LIMIT = 6           # máximo de frutas consideradas para pares
-PAIR_MIN_DIST_PX = 55          # distância mínima entre frutas do par
-PAIR_MAX_DIST_PX = 320         # distância máxima entre frutas do par
+TOP_FRUITS_LIMIT = 1           # máximo de frutas consideradas para pares
+PAIR_MIN_DIST_PX = 9999          # distância mínima entre frutas do par
+PAIR_MAX_DIST_PX = 9999         # distância máxima entre frutas do par
 
 # Scoring do par
 PAIR_SCORE_Y_WEIGHT = 1.0
@@ -79,11 +85,11 @@ FOCUS_POINT_Y = 90
 SEGMENT_OFFSET_PX = 70         # offset do segmento para recheck de bomba
 OVERSHOOT_BASE_PX = 20         # overshoot base do slice
 OVERSHOOT_DIAG_FACTOR = 0.25   # fator sobre a diagonal do bbox
-BOMB_SAFE_BASE_PX = 45         # raio base de segurança contra bombas
-BOMB_SAFE_DIAG_FACTOR = 0.35   # fator sobre a diagonal do bbox da bomba
-INSTANT_SAFE_BASE_PX = 50      # raio base no recheck instantâneo
-BOMB_PRED_SAFE_BASE_PX = 50    # raio base na previsão de bomba
-BOMB_PRED_SAFE_DIAG_FACTOR = 0.38  # fator sobre a diagonal na previsão
+BOMB_SAFE_BASE_PX = 80         # raio base de segurança contra bombas
+BOMB_SAFE_DIAG_FACTOR = 0.40   # fator sobre a diagonal do bbox da bomba
+INSTANT_SAFE_BASE_PX = 80      # raio base no recheck instantâneo
+BOMB_PRED_SAFE_BASE_PX = 80    # raio base na previsão de bomba
+BOMB_PRED_SAFE_DIAG_FACTOR = 0.40  # fator sobre a diagonal na previsão
 
 # Limites/epsilons
 TIME_EPS_S = 1e-6              # evita divisões por zero
@@ -746,10 +752,11 @@ def bot_loop(
 
                 # latência esperada até metade do swipe
                 # (age já inclui inferência, porque ts é do frame)
-                base_params = SINGLE_FAST_PARAMS if speed > SPEED_FAST_THRESHOLD else SINGLE_UNKNOWN_PARAMS
-                w0, h0 = _det_wh(d0)
-                dyn_overshoot = max(OVERSHOOT_BASE_PX, int(OVERSHOOT_DIAG_FACTOR * math.hypot(w0, h0)))
-                t_pred = age + base_params["down_wait"] + base_params["duration"] * PRED_DURATION_FRAC
+                # base_params = SINGLE_FAST_PARAMS if speed > SPEED_FAST_THRESHOLD else SINGLE_UNKNOWN_PARAMS
+                # w0, h0 = _det_wh(d0)
+                # dyn_overshoot = max(OVERSHOOT_BASE_PX, int(OVERSHOOT_DIAG_FACTOR * math.hypot(w0, h0)))
+                # t_pred = age + base_params["down_wait"] + base_params["duration"] * PRED_DURATION_FRAC
+                t_pred = age + SINGLE_SHORT_PARAMS["down_wait"] + SINGLE_SHORT_PARAMS["duration"] * PRED_DURATION_FRAC
                 px, py = predict_point(cx, cy, vx, vy, t_pred)
 
                 if not clamp_inside_window(px, py, region.width, region.height, WINDOW_MARGIN_PX):
@@ -790,10 +797,45 @@ def bot_loop(
                     continue
 
                 action_id += 1
+                # logger.log_event(
+                #     "action",
+                #     {
+                #         "kind": "single",
+                #         "action_id": action_id,
+                #         "seq": seq,
+                #         "action_ts": time.time(),
+                #         "age_ms": age * 1000.0,
+                #         "dtv_ms": dtv * 1000.0,
+                #         "target_point": (px, py),
+                #         "angle_deg": ang,
+                #         "overshoot_px": dyn_overshoot,
+                #         "params": base_params,
+                #         "bomb_check": {
+                #             "instant_safe": True,
+                #             "bombs_n": len(bombs),
+                #         },
+                #         "recent": {
+                #             "recent_targets_count": len(recent_targets),
+                #             "recent_ttl_s": RECENT_TTL_S,
+                #             "recent_radius_px": RECENT_RADIUS_PX,
+                #         },
+                #     },
+                # )
+
+                # controller.slice_in_window(
+                #     px, py,
+                #     ScreenOffset(region.left, region.top),
+                #     window_w=region.width,
+                #     window_h=region.height,
+                #     margin=WINDOW_MARGIN_PX,
+                #     angle_deg=ang,
+                #     overshoot=dyn_overshoot,
+                #     **base_params
+                # )
                 logger.log_event(
                     "action",
                     {
-                        "kind": "single",
+                        "kind": "single_short",
                         "action_id": action_id,
                         "seq": seq,
                         "action_ts": time.time(),
@@ -801,8 +843,7 @@ def bot_loop(
                         "dtv_ms": dtv * 1000.0,
                         "target_point": (px, py),
                         "angle_deg": ang,
-                        "overshoot_px": dyn_overshoot,
-                        "params": base_params,
+                        "params": SINGLE_SHORT_PARAMS,
                         "bomb_check": {
                             "instant_safe": True,
                             "bombs_n": len(bombs),
@@ -815,15 +856,14 @@ def bot_loop(
                     },
                 )
 
-                controller.slice_in_window(
+                controller.slice_short_from_center_in_window(
                     px, py,
                     ScreenOffset(region.left, region.top),
                     window_w=region.width,
                     window_h=region.height,
                     margin=WINDOW_MARGIN_PX,
                     angle_deg=ang,
-                    overshoot=dyn_overshoot,
-                    **base_params
+                    **SINGLE_SHORT_PARAMS
                 )
 
                 last_action_t = time.time()
