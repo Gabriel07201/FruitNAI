@@ -139,6 +139,8 @@ class WindowLocator:
 
 class ScreenGrabber:
     def __init__(self, output_idx: int = 0, target_fps: int = 60):
+        self._output_idx = output_idx
+        self._target_fps = target_fps
         self._camera = dxcam.create(output_idx=output_idx)
         if self._camera is None:
             raise RuntimeError("Falha ao inicializar DXCAM.")
@@ -149,9 +151,27 @@ class ScreenGrabber:
         top = region.top
         right = left + region.width
         bottom = top + region.height
-        frame = self._camera.grab(region=(left, top, right, bottom))
-        if frame is None:
-            raise RuntimeError("Falha ao capturar frame via DXCAM.")
+        for _ in range(3):
+            frame = self._camera.grab(region=(left, top, right, bottom))
+            if frame is not None:
+                break
+            time.sleep(0.01)
+        else:
+            self._camera.stop()
+            self._camera = dxcam.create(output_idx=self._output_idx)
+            if self._camera is None:
+                raise RuntimeError("Falha ao reinicializar DXCAM.")
+            self._camera.start(target_fps=self._target_fps)
+            for _ in range(3):
+                frame = self._camera.grab(region=(left, top, right, bottom))
+                if frame is not None:
+                    break
+                time.sleep(0.01)
+            else:
+                raise RuntimeError(
+                    "Falha ao capturar frame via DXCAM "
+                    f"(output_idx={self._output_idx}, region=({left}, {top}, {right}, {bottom}))."
+                )
         frame = np.asarray(frame)
         if frame.ndim == 3 and frame.shape[2] == 4:
             return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)

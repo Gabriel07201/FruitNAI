@@ -67,6 +67,7 @@ SLEEP_NO_NEW_FRAME_S = 0.003
 SLEEP_OLD_DET_S = 0.002
 SLEEP_ACTION_COOLDOWN_S = 0.001
 SLEEP_WORKER_ERROR_S = 0.02
+SLEEP_CAPTURE_ERROR_S = 0.05
 
 # Debug HUD
 FPS_SMOOTHING_OLD = 0.9
@@ -695,7 +696,16 @@ def bot_loop(
 
     try:
         while not state.shutdown.is_set():
-            frame, region = capture.read()
+            try:
+                frame, region = capture.read()
+            except RuntimeError as e:
+                print("Erro na captura:", repr(e))
+                logger.log_event(
+                    "error",
+                    {"where": "capture", "err": repr(e)},
+                )
+                time.sleep(SLEEP_CAPTURE_ERROR_S)
+                continue
             t_frame = time.time()  # <<<< timestamp do frame
 
             t0 = time.time()
