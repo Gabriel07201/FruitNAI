@@ -25,13 +25,13 @@ BOMB_CLASS_ID = 1
 # Configuração - tuning)
 # Detecção/tempo
 MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no passado)
-MIN_ACTION_INTERVAL_S = 0.0  # intervalo mínimo entre cortes
+MIN_ACTION_INTERVAL_S = 0.04  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 5          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.7         # confiança mínima para considerar fruta
-MIN_FRUIT_AREA = 1800          # área mínima (px^2) para filtrar frutas pequenas
-RECENT_TTL_S = 0.1           # bloqueia repetir corte no mesmo lugar por N segundos
-RECENT_RADIUS_PX = 50         # raio de bloqueio para cortes recentes
+MIN_FRUIT_CONF = 0.82         # confiança mínima para considerar fruta
+MIN_FRUIT_AREA = 2000          # área mínima (px^2) para filtrar frutas pequenas
+RECENT_TTL_S = 0.25           # bloqueia repetir corte no mesmo lugar por N segundos
+RECENT_RADIUS_PX = 90         # raio de bloqueio para cortes recentes
 
 # Predictor
 PREDICT_IMGSZ = 640           # tamanho da imagem para o modelo
@@ -39,10 +39,10 @@ PREDICT_IOU_THRES = 0.50      # IoU para NMS
 
 # Parâmetros da ação
 SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro para fora)
-    "length": 80,
-    "down_wait": 0.015,
-    "duration": 0.07,
-    "steps": 1,
+    "length": 140,
+    "down_wait": 0.01,
+    "duration": 0.055,
+    "steps": 2,
 }
 
 # Segurança/margens
@@ -177,6 +177,7 @@ def bot_loop(
     latest_region = None
     latest_ts = 0.0        # timestamp do FRAME (não do fim da inferência)
     latest_seq = 0
+    latest_infer_ms = 0.0
     
     
     predictor = YoloOnnxPredictor(
@@ -270,6 +271,7 @@ def bot_loop(
         last_skip_agg_t = time.time()
 
         recent_targets = []  # (x, y, t)
+        prev_fruit_obs = []  # (cx, cy, ts_frame)
 
         def prune_recent(now):
             recent_targets[:] = [(x, y, t) for (x, y, t) in recent_targets if (now - t) <= RECENT_TTL_S]
@@ -365,6 +367,7 @@ def bot_loop(
                 region = latest_region
                 ts = latest_ts
                 seq = latest_seq
+                infer_ms = latest_infer_ms
 
             if region is None or seq == last_seen_seq:
                 time.sleep(SLEEP_NO_NEW_FRAME_S)
@@ -454,6 +457,34 @@ def bot_loop(
                 fruits_scored.append((cy, conf, i, d, cx, cy))
             fruits_scored.sort(key=lambda t: (-t[0], -t[1]))
             
+            # Calcula predição de posição com base em velocidade simples
+            def nearest_prev_point(cx, cy):
+                if not prev_fruit_obs:
+                    return None
+                return min(
+                    prev_fruit_obs,
+                    key=lambda p: (cx - p[0]) * (cx - p[0]) + (cy - p[1]) * (cy - p[1]),
+                )
+
+            _, _, _, _, cx, cy = fruits_scored[0]
+            prev_point = nearest_prev_point(cx, cy)
+            vx = 0.0
+            vy = 0.0
+            if prev_point is not None:
+                prev_cx, prev_cy, prev_ts = prev_point
+                obs_dt = ts - prev_ts
+                if obs_dt > TIME_EPS_S:
+                    vx = (cx - prev_cx) / obs_dt
+                    vy = (cy - prev_cy) / obs_dt
+
+            action_delay_s = SINGLE_SHORT_PARAMS["down_wait"] + (SINGLE_SHORT_PARAMS["duration"] / 2.0)
+            t_pred = now + (infer_ms / 1000.0) + age + action_delay_s
+            dt_pred = t_pred - ts
+            px = cx + vx * dt_pred
+            py = cy + vy * dt_pred
+
+            prev_fruit_obs = [(pt[0], pt[1], ts) for pt in cur_fruit_pts]
+            
             top_candidates = []
             for cy, conf, i, d, cx, cy2 in fruits_scored[:max(3, min(6, len(fruits_scored)))]:
                 w, h = _det_wh(d)
@@ -475,6 +506,8 @@ def bot_loop(
                     "n_fruits_raw": len(fruits_raw),
                     "n_fruits_filtered": len(fruits),
                     "n_bombs": len(bombs),
+                    "pred_dt_s": dt_pred,
+                    "pred_point": (px, py),
                     "top_candidates": top_candidates,
                 },
             )
@@ -484,9 +517,6 @@ def bot_loop(
                 # -------------------------
                 # Fallback: 1 fruta
                 # -------------------------
-                _, _, _, _, cx, cy = fruits_scored[0]
-                px, py = cx, cy
-
                 if not clamp_inside_window(px, py, region.width, region.height, WINDOW_MARGIN_PX):
                     log_skip(
                         "outside",
@@ -588,12 +618,14 @@ def bot_loop(
             t0 = time.time()
             dets = predictor.predict(frame)
             t1 = time.time()
+            infer_ms = (t1 - t0) * 1000.0
 
             # Publica para o worker antes de draw/imshow
             with lock:
                 latest_dets = dets
                 latest_region = region
                 latest_ts = t_frame     # <<<< era t1; agora é o frame
+                latest_infer_ms = infer_ms
                 latest_seq += 1
                 seq = latest_seq
 
@@ -606,7 +638,6 @@ def bot_loop(
             fps = FPS_SMOOTHING_OLD * fps + FPS_SMOOTHING_NEW * (1.0 / dt)
 
             status = "RUN" if state.running.is_set() else "STOP"
-            infer_ms = (t1 - t0) * 1000.0
 
             cv2.putText(
                 vis,
