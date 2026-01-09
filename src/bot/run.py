@@ -166,6 +166,7 @@ def bot_loop(
     def on_press(key):
         if key == keyboard.Key.f2:
             _toggle_running(state)
+            
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
