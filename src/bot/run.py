@@ -27,7 +27,7 @@ BOMB_CLASS_ID = 1
 # Detecção/tempo
 MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no passado)
 MIN_ACTION_INTERVAL_S = 0.04  # intervalo mínimo entre cortes
-FOCUS_EVERY_S = 5          # refoca a janela a cada N segundos
+FOCUS_EVERY_S = 15          # refoca a janela a cada N segundos
 
 MIN_FRUIT_CONF = 0.6         # confiança mínima para considerar fruta
 MIN_FRUIT_AREA = 2000          # área mínima (px^2) para filtrar frutas pequenas
@@ -43,17 +43,17 @@ SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro pa
     "length": 90,
     "down_wait": 0.01,
     "duration": 0.055,
-    "steps": 2,
+    "steps": 1,
 }
 
 # Segurança/margens
 WINDOW_MARGIN_PX = 14          # margem para clamp/slice dentro da janela
 FOCUS_POINT_X = 90             # ponto de foco dentro da janela
 FOCUS_POINT_Y = 90
-SEGMENT_OFFSET_PX = 70         # offset do segmento para recheck de bomba
+SEGMENT_OFFSET_PX = 110         # offset do segmento para recheck de bomba
 OVERSHOOT_BASE_PX = 20         # overshoot base do slice
 OVERSHOOT_DIAG_FACTOR = 0.25   # fator sobre a diagonal do bbox
-BOMB_SAFE_BASE_PX = 90         # raio base de segurança contra bombas
+BOMB_SAFE_BASE_PX = 110         # raio base de segurança contra bombas
 BOMB_SAFE_DIAG_FACTOR = 0.40   # fator sobre a diagonal do bbox da bomba
 INSTANT_SAFE_BASE_PX = 80      # raio base no recheck instantâneo
 
@@ -141,10 +141,16 @@ def bot_loop(
     state: BotState,
     title_substring: str = TITLE_SUBSTRING,
     onnx_path: str = ONNX_PATH,
+    enable_diagnostics: bool = False,
 ):
     start_ts = time.time()
-    logger = RunLogger()
-    logger.log_event(
+    logger = RunLogger() if enable_diagnostics else None
+
+    def log_event(event_type: str, payload: dict) -> None:
+        if enable_diagnostics and logger is not None:
+            logger.log_event(event_type, payload)
+
+    log_event(
         "run",
         {
             "pid": os.getpid(),
@@ -190,7 +196,7 @@ def bot_loop(
         class_agnostic=False,
     )
     
-    logger.log_event(
+    log_event(
         "config",
         {
             "tuning_params": {
@@ -296,10 +302,10 @@ def bot_loop(
             if (now - last_skip_log_t) >= SKIP_LOG_MIN_INTERVAL_S:
                 payload = {"seq": seq, "reason": reason}
                 payload.update(fields)
-                logger.log_event("skip", payload)
+                log_event("skip", payload)
                 last_skip_log_t = now
             if (now - last_skip_agg_t) >= SKIP_AGG_EVERY_S:
-                logger.log_event(
+                log_event(
                     "skip_agg",
                     {
                         "seq": seq,
@@ -332,7 +338,7 @@ def bot_loop(
                 result_hint = "split_like"
             else:
                 result_hint = "still_near"
-            logger.log_event(
+            log_event(
                 "post_action",
                 {
                     "seq": seq,
@@ -439,7 +445,7 @@ def bot_loop(
                     y=FOCUS_POINT_Y,
                 )
                 last_focus_t = now
-                logger.log_event(
+                log_event(
                     "focus",
                     {
                         "seq": seq,
@@ -545,7 +551,7 @@ def bot_loop(
                     }
                 )
 
-            logger.log_event(
+            log_event(
                 "decision",
                 {
                     "seq": seq,
@@ -618,7 +624,7 @@ def bot_loop(
                     continue
 
                 action_id += 1
-                logger.log_event(
+                log_event(
                     "action",
                     {
                         "kind": "single_short",
@@ -673,7 +679,7 @@ def bot_loop(
                 post_action_executor.submit(post_action_observe, seq, region, [(px, py)])
 
             except pyautogui.FailSafeException:
-                logger.log_event(
+                log_event(
                     'shutdown',
                     {'reason': 'pyautogui_failsafe_triggered', 'seq': seq},
                 )
@@ -681,7 +687,7 @@ def bot_loop(
                 break
             except Exception as e:
                 print("Erro no action_worker:", repr(e))
-                logger.log_event(
+                log_event(
                     "error",
                     {"where": "action_worker", "err": repr(e), "seq": seq},
                 )
@@ -700,7 +706,7 @@ def bot_loop(
                 frame, region = capture.read()
             except RuntimeError as e:
                 print("Erro na captura:", repr(e))
-                logger.log_event(
+                log_event(
                     "error",
                     {"where": "capture", "err": repr(e)},
                 )
@@ -723,7 +729,8 @@ def bot_loop(
                 seq = latest_seq
 
             # Debug
-            vis = predictor.draw(frame, dets)
+            if enable_diagnostics:
+                vis = predictor.draw(frame, dets)
 
             now = time.time()
             dt = max(TIME_EPS_S, now - last_t)
@@ -732,23 +739,24 @@ def bot_loop(
 
             status = "RUN" if state.running.is_set() else "STOP"
 
-            cv2.putText(
-                vis,
-                f"{region.width}x{region.height}  FPS:{fps:.1f}  dets:{len(dets)}  {status} (F2)  infer:{infer_ms:.0f}ms",
-                DEBUG_TEXT_POS,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                DEBUG_TEXT_SCALE,
-                DEBUG_TEXT_COLOR,
-                DEBUG_TEXT_THICKNESS,
-                cv2.LINE_AA,
-            )
+            if enable_diagnostics:
+                cv2.putText(
+                    vis,
+                    f"{region.width}x{region.height}  FPS:{fps:.1f}  dets:{len(dets)}  {status} (F2)  infer:{infer_ms:.0f}ms",
+                    DEBUG_TEXT_POS,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    DEBUG_TEXT_SCALE,
+                    DEBUG_TEXT_COLOR,
+                    DEBUG_TEXT_THICKNESS,
+                    cv2.LINE_AA,
+                )
 
-            cv2.imshow("bot_debug", vis)
+                cv2.imshow("bot_debug", vis)
             
             if seq % FRAME_SAMPLE_EVERY == 0:
                 fruits_raw = [d for d in dets if int(getattr(d, "cls", -1)) == FRUIT_CLASS_ID]
                 bombs = [d for d in dets if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
-                logger.log_event(
+                log_event(
                     "frame",
                     {
                         "seq": seq,
@@ -767,20 +775,31 @@ def bot_loop(
                     },
                 )
 
-            k = cv2.waitKey(DEBUG_WAITKEY_MS) & 0xFF
-            if k == ord("q"):
-                state.shutdown.set()
-                break
+            if enable_diagnostics:
+                k = cv2.waitKey(DEBUG_WAITKEY_MS) & 0xFF
+                if k == ord("q"):
+                    state.shutdown.set()
+                    break
 
     finally:
         listener.stop()
         cv2.destroyAllWindows()
-        logger.close()
+        if logger is not None:
+            logger.close()
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="FruitNinja bot runner.")
+    parser.add_argument(
+        "--enable-diagnostics",
+        action="store_true",
+        help="Ativa draw/debug/logs",
+    )
+    args = parser.parse_args()
     state = BotState()
-    bot_loop(state)
+    bot_loop(state, enable_diagnostics=args.enable_diagnostics)
 
 
 if __name__ == "__main__":
