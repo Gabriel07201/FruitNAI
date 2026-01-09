@@ -29,7 +29,7 @@ MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no pas
 MIN_ACTION_INTERVAL_S = 0.04  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 5          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.82         # confiança mínima para considerar fruta
+MIN_FRUIT_CONF = 0.6         # confiança mínima para considerar fruta
 MIN_FRUIT_AREA = 2000          # área mínima (px^2) para filtrar frutas pequenas
 RECENT_TTL_S = 0.25           # bloqueia repetir corte no mesmo lugar por N segundos
 RECENT_RADIUS_PX = 90         # raio de bloqueio para cortes recentes
@@ -40,7 +40,7 @@ PREDICT_IOU_THRES = 0.50      # IoU para NMS
 
 # Parâmetros da ação
 SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro para fora)
-    "length": 140,
+    "length": 90,
     "down_wait": 0.01,
     "duration": 0.055,
     "steps": 2,
@@ -53,7 +53,7 @@ FOCUS_POINT_Y = 90
 SEGMENT_OFFSET_PX = 70         # offset do segmento para recheck de bomba
 OVERSHOOT_BASE_PX = 20         # overshoot base do slice
 OVERSHOOT_DIAG_FACTOR = 0.25   # fator sobre a diagonal do bbox
-BOMB_SAFE_BASE_PX = 80         # raio base de segurança contra bombas
+BOMB_SAFE_BASE_PX = 90         # raio base de segurança contra bombas
 BOMB_SAFE_DIAG_FACTOR = 0.40   # fator sobre a diagonal do bbox da bomba
 INSTANT_SAFE_BASE_PX = 80      # raio base no recheck instantâneo
 
