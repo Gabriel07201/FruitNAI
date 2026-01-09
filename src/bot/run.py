@@ -50,12 +50,12 @@ SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro pa
 WINDOW_MARGIN_PX = 14          # margem para clamp/slice dentro da janela
 FOCUS_POINT_X = 90             # ponto de foco dentro da janela
 FOCUS_POINT_Y = 90
-SEGMENT_OFFSET_PX = 100         # offset do segmento para recheck de bomba
+SEGMENT_OFFSET_PX = 90         # offset do segmento para recheck de bomba
 OVERSHOOT_BASE_PX = 18         # overshoot base do slice
 OVERSHOOT_DIAG_FACTOR = 0.15   # fator sobre a diagonal do bbox
-BOMB_SAFE_BASE_PX = 100         # raio base de segurança contra bombas
+BOMB_SAFE_BASE_PX = 90         # raio base de segurança contra bombas
 BOMB_SAFE_DIAG_FACTOR = 0.45   # fator sobre a diagonal do bbox da bomba
-INSTANT_SAFE_BASE_PX = 100      # raio base no recheck instantâneo
+INSTANT_SAFE_BASE_PX = 90      # raio base no recheck instantâneo
 
 # Limites/epsilons
 TIME_EPS_S = 1e-6              # evita divisões por zero

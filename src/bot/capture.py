@@ -1,10 +1,12 @@
 import time
+import threading
 from dataclasses import dataclass
 from typing import Optional, List
 
 import numpy as np
 import cv2
 import dxcam
+import numpy as np
 
 import win32gui
 import win32con
@@ -24,6 +26,17 @@ def list_visible_window_titles(limit: int = 60) -> List[str]:
 
     win32gui.EnumWindows(enum_handler, None)
     return titles[:limit]
+
+
+def crop_safe(frame: np.ndarray, left: int, top: int, right: int, bottom: int) -> np.ndarray:
+    h, w = frame.shape[:2]
+
+    l = max(0, min(int(left),  w - 1))
+    t = max(0, min(int(top),   h - 1))
+    r = max(l + 1, min(int(right),  w))
+    b = max(t + 1, min(int(bottom), h))
+
+    return frame[t:b, l:r]
 
 @dataclass(frozen=True)
 class WindowRegion:
@@ -144,54 +157,62 @@ class ScreenGrabber:
         self._target_fps = target_fps
         self._output_color = "BGRA"
         self._logger = logging.getLogger(__name__)
-        # DXCAM deve entregar BGRA para conversão consistente em BGR.
+        self._lock = threading.Lock()
+
         self._camera = dxcam.create(output_idx=output_idx, output_color=self._output_color)
         if self._camera is None:
             raise RuntimeError("Falha ao inicializar DXCAM.")
-        self._camera.start(target_fps=target_fps)
-    
 
-    def grab_bgr(self, region: WindowRegion) -> np.ndarray:
+        # Em capture mode, o consumo correto é get_latest_frame (README). :contentReference[oaicite:2]{index=2}
+        self._camera.start(target_fps=target_fps, video_mode=True)
+
+        self._last_frame = None
+
+    def grab_bgr(self, region) -> np.ndarray:
         left = region.left
         top = region.top
         right = left + region.width
         bottom = top + region.height
-        try:
-            frame = self._camera.grab(region=(left, top, right, bottom))
-        except COMError as exc:
-            frame = None
-            self._logger.warning("COMError durante grab: %s", exc)
+
+        with self._lock:
+            frame = self._camera.get_latest_frame()
+
+        # Em alguns cenários pode vir None; usa o último frame para não derrubar o loop.
         if frame is None:
-            raise RuntimeError(
-                "Falha ao capturar frame via DXCAM "
-                f"(output_idx={self._output_idx}, region=({left}, {top}, {right}, {bottom}))."
-            )
-        frame = np.asarray(frame)
-        if frame.ndim == 3 and frame.shape[2] == 4:
-            if self._output_color == "BGRA":
-                return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-            if self._output_color == "RGBA":
-                return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-        return frame
+            frame = self._last_frame
+            if frame is None:
+                raise RuntimeError("Sem frame disponível ainda (get_latest_frame retornou None).")
+        else:
+            frame = np.asarray(frame)
+            self._last_frame = frame
+
+        # recorta (BGRA)
+        roi = crop_safe(frame, left, top, right, bottom)
+
+        # converte ROI (menor) -> BGR
+        if roi.ndim == 3 and roi.shape[2] == 4 and self._output_color == "BGRA":
+            return cv2.cvtColor(roi, cv2.COLOR_BGRA2BGR)
+
+        return roi
+
+    def close(self):
+        try:
+            self._camera.stop()
+        except Exception as exc:
+            self._logger.warning("Falha ao parar DXCAM: %s", exc)
 
 
 class GameCapture:
     def __init__(self, title_substring: str, bring_foreground: bool = True, target_fps: int = 60):
         self.locator = WindowLocator(title_substring)
-        self.grabber: Optional[ScreenGrabber] = None
-        self._monitor_idx: Optional[int] = None
         self.bring_foreground = bring_foreground
         self.target_fps = target_fps
-        self._logger = logging.getLogger(__name__)
+
+        self._capture = self.locator.get_client_region(bring_foreground=self.bring_foreground)
+        self._monitor_idx = self._capture.monitor.idx
+
+        self.grabber = ScreenGrabber(output_idx=self._monitor_idx, target_fps=self.target_fps)
 
     def read(self) -> tuple[np.ndarray, WindowRegion]:
-        capture = self.locator.get_client_region(bring_foreground=self.bring_foreground)
-        if self.grabber is None or capture.monitor.idx != self._monitor_idx:
-            self.grabber = ScreenGrabber(output_idx=capture.monitor.idx, target_fps=self.target_fps)
-            self._monitor_idx = capture.monitor.idx
-
-        region_abs = capture.region_abs
-        region_rel = capture.region_rel
-        frame = self.grabber.grab_bgr(region_rel)
-        
-        return frame, region_abs
+        frame = self.grabber.grab_bgr(self._capture.region_rel)
+        return frame, self._capture.region_abs
