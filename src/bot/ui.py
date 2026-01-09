@@ -49,8 +49,8 @@ def main():
     ttk.Label(frm, text="Controle do Bot").grid(row=0, column=0, columnspan=3, pady=(0, 8))
 
     root.bind("<F2>", toggle_running)
-    ttk.Button(frm, text="Começar/Parar (F2)", command=stop).grid(row=2, column=1, padx=5)
-    ttk.Button(frm, text="Sair (F2)", command=quit_app).grid(row=2, column=2, padx=5)
+    ttk.Button(frm, text="Começar/Pausar (F2)", command=stop).grid(row=2, column=1, padx=5)
+    ttk.Button(frm, text="Encerrar (F3)", command=quit_app).grid(row=2, column=2, padx=5)
 
     root.protocol("WM_DELETE_WINDOW", quit_app)
     root.mainloop()
