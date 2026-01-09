@@ -50,12 +50,12 @@ SINGLE_SHORT_PARAMS = {       # slice curto quando só há 1 fruta (do centro pa
 WINDOW_MARGIN_PX = 14          # margem para clamp/slice dentro da janela
 FOCUS_POINT_X = 90             # ponto de foco dentro da janela
 FOCUS_POINT_Y = 90
-SEGMENT_OFFSET_PX = 110         # offset do segmento para recheck de bomba
-OVERSHOOT_BASE_PX = 20         # overshoot base do slice
-OVERSHOOT_DIAG_FACTOR = 0.25   # fator sobre a diagonal do bbox
-BOMB_SAFE_BASE_PX = 110         # raio base de segurança contra bombas
-BOMB_SAFE_DIAG_FACTOR = 0.40   # fator sobre a diagonal do bbox da bomba
-INSTANT_SAFE_BASE_PX = 80      # raio base no recheck instantâneo
+SEGMENT_OFFSET_PX = 100         # offset do segmento para recheck de bomba
+OVERSHOOT_BASE_PX = 18         # overshoot base do slice
+OVERSHOOT_DIAG_FACTOR = 0.15   # fator sobre a diagonal do bbox
+BOMB_SAFE_BASE_PX = 100         # raio base de segurança contra bombas
+BOMB_SAFE_DIAG_FACTOR = 0.45   # fator sobre a diagonal do bbox da bomba
+INSTANT_SAFE_BASE_PX = 100      # raio base no recheck instantâneo
 
 # Limites/epsilons
 TIME_EPS_S = 1e-6              # evita divisões por zero
@@ -705,11 +705,6 @@ def bot_loop(
             try:
                 frame, region = capture.read()
             except RuntimeError as e:
-                print("Erro na captura:", repr(e))
-                log_event(
-                    "error",
-                    {"where": "capture", "err": repr(e)},
-                )
                 time.sleep(SLEEP_CAPTURE_ERROR_S)
                 continue
             t_frame = time.time()  # <<<< timestamp do frame

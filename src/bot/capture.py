@@ -1,5 +1,4 @@
 import time
-import threading
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -144,9 +143,6 @@ class ScreenGrabber:
         self._output_idx = output_idx
         self._target_fps = target_fps
         self._output_color = "BGRA"
-        self._reinit_lock = threading.Lock()
-        self._needs_reinit = False
-        self._reinit_reason: Optional[str] = None
         self._logger = logging.getLogger(__name__)
         # DXCAM deve entregar BGRA para conversão consistente em BGR.
         self._camera = dxcam.create(output_idx=output_idx, output_color=self._output_color)
@@ -154,54 +150,18 @@ class ScreenGrabber:
             raise RuntimeError("Falha ao inicializar DXCAM.")
         self._camera.start(target_fps=target_fps)
     
-    @property
-    def needs_reinit(self) -> bool:
-        with self._reinit_lock:
-            return self._needs_reinit
-
-    def _mark_reinit(self, reason: str) -> None:
-        with self._reinit_lock:
-            if self._needs_reinit:
-                return
-            self._needs_reinit = True
-            self._reinit_reason = reason
-        self._logger.warning("DXCAM sinalizou reinicialização: %s", reason)
-
-    def _reinit_camera(self) -> None:
-        with self._reinit_lock:
-            if not self._needs_reinit:
-                return
-            reason = self._reinit_reason or "motivo desconhecido"
-            self._needs_reinit = False
-            self._reinit_reason = None
-
-        self._logger.warning("Reinicializando DXCAM (motivo: %s).", reason)
-        self._camera.stop()
-        self._camera = dxcam.create(output_idx=self._output_idx, output_color=self._output_color)
-        if self._camera is None:
-            raise RuntimeError("Falha ao reinicializar DXCAM.")
-        self._camera.start(target_fps=self._target_fps)
 
     def grab_bgr(self, region: WindowRegion) -> np.ndarray:
         left = region.left
         top = region.top
         right = left + region.width
         bottom = top + region.height
-        for _ in range(3):
-            try:
-                frame = self._camera.grab(region=(left, top, right, bottom))
-            except COMError as exc:
-                self._mark_reinit(f"COMError durante grab: {exc}")
-                frame = None
-                break
-            if frame is not None:
-                break
-            time.sleep(0.01)
+        try:
+            frame = self._camera.grab(region=(left, top, right, bottom))
+        except COMError as exc:
+            frame = None
+            self._logger.warning("COMError durante grab: %s", exc)
         if frame is None:
-            self._mark_reinit(
-                "frame None após 3 tentativas "
-                f"(output_idx={self._output_idx}, region=({left}, {top}, {right}, {bottom}))"
-            )
             raise RuntimeError(
                 "Falha ao capturar frame via DXCAM "
                 f"(output_idx={self._output_idx}, region=({left}, {top}, {right}, {bottom}))."
@@ -232,20 +192,6 @@ class GameCapture:
 
         region_abs = capture.region_abs
         region_rel = capture.region_rel
-        monitor_rect = capture.monitor.rect
-        region_abs_rect = (region_abs.left, region_abs.top, region_abs.left + region_abs.width, region_abs.top + region_abs.height)
-        region_rel_rect = (region_rel.left, region_rel.top, region_rel.left + region_rel.width, region_rel.top + region_rel.height)
-
-        self._logger.info(
-            "DXCAM grab info: monitor_idx=%s monitor_rect=%s region_abs=%s region_rel=%s",
-            capture.monitor.idx,
-            monitor_rect,
-            region_abs_rect,
-            region_rel_rect,
-        )
-
-        if self.grabber.needs_reinit:
-            self.grabber._reinit_camera()
-
         frame = self.grabber.grab_bgr(region_rel)
+        
         return frame, region_abs
