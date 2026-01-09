@@ -7,7 +7,6 @@ import time
 import concurrent.futures
 import cv2
 import pyautogui
-
 from pynput import keyboard
 
 from .state import BotState
@@ -15,7 +14,6 @@ from .capture import GameCapture, list_visible_window_titles
 from .predictor import YoloOnnxPredictor
 from .controller import Controller, ScreenOffset
 from .logger import RunLogger
-
 
 TITLE_SUBSTRING = "Fruit Ninja"
 ONNX_PATH = "models/runs/fruitninja_yolo11n2/weights/best.onnx"
@@ -98,6 +96,34 @@ def _det_center(d):
 
 def _det_wh(d):
     return int(abs(d.x2 - d.x1)), int(abs(d.y2 - d.y1))
+
+
+def _det_xyxy(d):
+    x1 = int(min(d.x1, d.x2))
+    y1 = int(min(d.y1, d.y2))
+    x2 = int(max(d.x1, d.x2))
+    y2 = int(max(d.y1, d.y2))
+    return x1, y1, x2, y2
+
+
+def _box_iou(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, (ax2 - ax1)) * max(0, (ay2 - ay1))
+    area_b = max(0, (bx2 - bx1)) * max(0, (by2 - by1))
+    union = area_a + area_b - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
 
 
 def _dist_point_to_segment(px, py, ax, ay, bx, by) -> float:
@@ -287,15 +313,17 @@ def bot_loop(
         def prune_recent(now):
             recent_targets[:] = [(x, y, t) for (x, y, t) in recent_targets if (now - t) <= RECENT_TTL_S]
 
-        def is_recent(x, y, now):
+        def add_recent_point(x,y,r, now):
+            recent_points.append((x,y,r,now))
+
+        def is_recent_box(x1,y1,x2,y2, now, *, iou_thr, center_thr):
             prune_recent(now)
             for rx, ry, rt in recent_targets:
                 if (x - rx) * (x - rx) + (y - ry) * (y - ry) <= (RECENT_RADIUS_PX * RECENT_RADIUS_PX):
                     return True
             return False
 
-        def add_recent(x, y, now):
-            recent_targets.append((x, y, now))
+        def is_recent_point(x,y, now):
             prune_recent(now)
         
         def log_skip(reason, seq, **fields):
@@ -371,6 +399,118 @@ def bot_loop(
             clamped = (clamped_x != x) or (clamped_y != y)
             return clamped_x, clamped_y, clamped
 
+        def _box_area(b):
+            x1, y1, x2, y2 = b
+            return max(0, x2 - x1) * max(0, y2 - y1)
+
+        def outcome_check(now, fruits_raw):
+            """
+            Decide hit/miss para o pending.
+
+            Meta:
+            - MISS (hit=False): fruta intacta ainda "no alvo"
+            - HIT  (hit=True): fruta sumiu do alvo OU o que sobrou perto parece pedaço/split
+            """
+            nonlocal pending, last_hit_t
+            if pending is None:
+                return
+
+            if (now - pending["t"]) > OUTCOME_WINDOW_S:
+                dbg.log(
+                    "outcome",
+                    action_id=pending["action_id"],
+                    action_kind=pending["kind"],
+                    hit=None,
+                    reason="timeout",
+                )
+                pending = None
+                return
+
+            thr2 = OUTCOME_CENTER_PX * OUTCOME_CENTER_PX
+
+            intact_found = False
+            split_found = False
+            any_near = False
+
+            # telemetria (ajuda a validar)
+            best_iou_global = 0.0
+            best_area_ratio_global = None
+            near_count_global = 0
+
+            for (tbox, (tx, ty)) in pending["targets"]:
+                t_area = max(1, _box_area(tbox))
+
+                best_iou = 0.0
+                best_area_ratio = None
+                near_count = 0
+
+                for d in fruits_raw:
+                    box = _det_xyxy(d)
+                    cx, cy = _det_center(d)
+
+                    iou = _box_iou(box, tbox)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_area_ratio = _box_area(box) / t_area
+
+                    dx = cx - tx
+                    dy = cy - ty
+                    if (dx*dx + dy*dy) <= thr2:
+                        near_count += 1
+
+                # “perto” pode ser por IoU ou por centro (igual sua lógica original)
+                is_near = (best_iou >= OUTCOME_IOU_THR) or (near_count > 0)
+                if is_near:
+                    any_near = True
+
+                # atualiza telemetria global
+                near_count_global += near_count
+                if best_iou > best_iou_global:
+                    best_iou_global = best_iou
+                    best_area_ratio_global = best_area_ratio
+
+                # classifica intacto vs split (somente se teve algo perto)
+                if is_near and best_area_ratio is not None:
+                    # intacto: IoU alto e área parecida com a caixa alvo
+                    if (best_iou >= OUTCOME_INTACT_IOU_THR) and (best_area_ratio >= OUTCOME_INTACT_AREA_RATIO):
+                        intact_found = True
+
+                    # split: 2+ dets perto OU a melhor detecção é bem menor que a caixa alvo
+                    if (near_count >= OUTCOME_SPLIT_MIN_NEAR) or (best_area_ratio <= OUTCOME_SPLIT_AREA_RATIO):
+                        split_found = True
+
+            # regra final
+            if intact_found:
+                hit = False
+                reason = "intact"
+            elif not any_near:
+                hit = True
+                reason = "gone"
+            elif split_found:
+                hit = True
+                reason = "split"
+            else:
+                # caso raro: tem algo perto, mas não ficou claro
+                hit = False
+                reason = "ambiguous"
+
+            dbg.log(
+                "outcome",
+                action_id=pending["action_id"],
+                action_kind=pending["kind"],
+                hit=hit,
+                reason=reason,
+                near_count=near_count_global,
+                best_iou=best_iou_global,
+                best_area_ratio=best_area_ratio_global,
+                n_fruits_raw=len(fruits_raw),
+            )
+
+            if hit:
+                last_hit_t = now
+            pending = None
+
+
         while not state.shutdown.is_set():
             if not state.running.is_set():
                 time.sleep(SLEEP_WHEN_STOPPED_S)
@@ -415,11 +555,17 @@ def bot_loop(
 
             fruits_raw = [d for d in dets if int(getattr(d, "cls", -1)) == FRUIT_CLASS_ID]
             bombs = [d for d in dets if int(getattr(d, "cls", -1)) == BOMB_CLASS_ID]
+
+            # tenta concluir outcome de ação anterior
+            outcome_check(now, fruits_raw)
+
             if not fruits_raw:
                 log_skip("no_fruit_raw", seq, n_raw=0)
                 continue
 
-            # Filtra frutas (conf/area)
+            prune_recent(now)
+
+            # filtra frutas (conf/area)
             fruits = []
             for d in fruits_raw:
                 conf = float(getattr(d, "conf", 0.0))
@@ -463,7 +609,7 @@ def bot_loop(
                     },
                 )
 
-            # Ordena frutas por: mais embaixo + maior conf
+            # ordena frutas
             fruits_scored = []
             for i, d in enumerate(fruits):
                 cx, cy = cur_fruit_pts[i]
@@ -676,6 +822,28 @@ def bot_loop(
                     angle_deg=ang,
                     **SINGLE_SHORT_PARAMS
                 )
+                t1 = time.perf_counter()
+
+                planned_ms = (base_params["down_wait"] + base_params["duration"]) * 1000.0
+                exec_ms = (t1 - t0) * 1000.0
+
+                dbg.log(
+                    "single",
+                    action_id=action_id,
+                    seq=seq,
+                    age_ms=age*1000.0,
+                    t_pred=t_pred,
+                    planned_ms=planned_ms,
+                    action_exec_ms=exec_ms,
+                    n_fruits=len(fruits),
+                    n_bombs=len(bombs),
+                    px=px, py=py,
+                    angle_deg=ang,
+                    length=base_params["length"],
+                    overshoot=dyn_overshoot,
+                    speed=speed,
+                    match_dist=md0,
+                )
 
                 last_action_t = time.time()
                 add_recent(px, py, last_action_t)
@@ -696,10 +864,12 @@ def bot_loop(
                 )
                 time.sleep(SLEEP_WORKER_ERROR_S)
 
+        dbg.close()
+
     action_thread = threading.Thread(target=action_worker, daemon=True)
     action_thread.start()
 
-    # Loop principal (captura + inferência + debug)
+    # Loop principal
     last_t = time.time()
     fps = 0.0
 
@@ -717,7 +887,6 @@ def bot_loop(
             t1 = time.time()
             infer_ms = (t1 - t0) * 1000.0
 
-            # Publica para o worker antes de draw/imshow
             with lock:
                 latest_dets = dets
                 latest_region = region
