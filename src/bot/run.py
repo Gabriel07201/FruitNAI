@@ -18,7 +18,7 @@ from .logger import RunLogger
 
 
 TITLE_SUBSTRING = "Fruit Ninja"
-ONNX_PATH = "models/runs/fruitninja_yolo11n2/weights/best.onnx"
+ONNX_PATH = "models/runs/fruitninja_yolo11n3/weights/best.onnx"
 
 FRUIT_CLASS_ID = 0
 BOMB_CLASS_ID = 1
@@ -29,7 +29,7 @@ MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no pas
 MIN_ACTION_INTERVAL_S = 0.04  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 15          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.6         # confiança mínima para considerar fruta
+MIN_FRUIT_CONF = 0.70         # confiança mínima para considerar fruta
 MIN_FRUIT_AREA = 2000          # área mínima (px^2) para filtrar frutas pequenas
 RECENT_TTL_S = 0.25           # bloqueia repetir corte no mesmo lugar por N segundos
 RECENT_RADIUS_PX = 90         # raio de bloqueio para cortes recentes
