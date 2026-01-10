@@ -11,6 +11,7 @@ notebooks/runs/**/*.jpg
 notebooks/runs/**/*.jpeg
 
 logs/**
+fruitnai.egg-info/
 
 __pycache__/
 *.avi

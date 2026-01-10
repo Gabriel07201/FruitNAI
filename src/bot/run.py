@@ -29,10 +29,10 @@ MAX_DET_AGE_S = 0.03          # idade máxima da detecção (evita cortar no pas
 MIN_ACTION_INTERVAL_S = 0.04  # intervalo mínimo entre cortes
 FOCUS_EVERY_S = 15          # refoca a janela a cada N segundos
 
-MIN_FRUIT_CONF = 0.70         # confiança mínima para considerar fruta
+MIN_FRUIT_CONF = 0.60         # confiança mínima para considerar fruta
 MIN_FRUIT_AREA = 2000          # área mínima (px^2) para filtrar frutas pequenas
-RECENT_TTL_S = 0.25           # bloqueia repetir corte no mesmo lugar por N segundos
-RECENT_RADIUS_PX = 90         # raio de bloqueio para cortes recentes
+RECENT_TTL_S = 0.20           # bloqueia repetir corte no mesmo lugar por N segundos
+RECENT_RADIUS_PX = 70         # raio de bloqueio para cortes recentes
 
 # Predictor
 PREDICT_IMGSZ = 640           # tamanho da imagem para o modelo
