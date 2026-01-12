@@ -6,6 +6,7 @@ datasets/**
 models/runs/**/*.png
 models/runs/**/*.jpg
 models/runs/**/*.jpeg
+models/runs/fruitninja_yolo_manual/checkpoint-*/
 notebooks/runs/**/*.png
 notebooks/runs/**/*.jpg
 notebooks/runs/**/*.jpeg

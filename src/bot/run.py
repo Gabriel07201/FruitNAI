@@ -186,7 +186,7 @@ def bot_loop(
     lock = threading.Lock()
     latest_dets = []
     latest_region = None
-    latest_ts = 0.0        # timestamp do FRAME (não do fim da inferência)
+    latest_ts = 0.0        # timestamp do frame
     latest_seq = 0
     latest_infer_ms = 0.0
     
@@ -584,9 +584,7 @@ def bot_loop(
 
 
             try:
-                # -------------------------
                 # Fallback: 1 fruta
-                # -------------------------
                 if clamped:
                     log_skip(
                         "outside",
@@ -710,7 +708,7 @@ def bot_loop(
             except RuntimeError as e:
                 time.sleep(SLEEP_CAPTURE_ERROR_S)
                 continue
-            t_frame = time.time()  # <<<< timestamp do frame
+            t_frame = time.time()
 
             t0 = time.time()
             dets = predictor.predict(frame)
@@ -721,7 +719,7 @@ def bot_loop(
             with lock:
                 latest_dets = dets
                 latest_region = region
-                latest_ts = t_frame     # <<<< era t1; agora é o frame
+                latest_ts = t_frame
                 latest_infer_ms = infer_ms
                 latest_seq += 1
                 seq = latest_seq

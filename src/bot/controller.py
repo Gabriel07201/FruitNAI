@@ -24,9 +24,7 @@ class Controller:
         pyautogui.PAUSE = pause
         pyautogui.FAILSAFE = fail_safe
 
-    # ----------------------------
     # Helpers de clamp e coords
-    # ----------------------------
     def _clamp_rel_xy(
         self,
         x: int,
@@ -53,9 +51,7 @@ class Controller:
         rx, ry = self._clamp_rel_xy(x, y, window_w, window_h, margin)
         return offset.left + rx, offset.top + ry
 
-    # ----------------------------
     # Ações básicas
-    # ----------------------------
     def click_in_window(self, x: int, y: int, offset: ScreenOffset, button: str = "left"):
         pyautogui.click(x=offset.left + x, y=offset.top + y, button=button)
 
@@ -92,9 +88,7 @@ class Controller:
     def press(self, key: str):
         pyautogui.press(key)
 
-    # ----------------------------
     # Slice (linha / segmento)
-    # ----------------------------
     def slice_line_in_window(
         self,
         x1: int,
