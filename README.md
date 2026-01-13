@@ -120,12 +120,16 @@ Ele tem como foco a identificação de objetos, então além de categorizar ele 
 Para chegarmos na lógica do YOLO precisamos passar por algumas outras arquiteturas de redes primeiro.
 RCNN: usa Selective Search para selecionar uma região e depois passa para uma CNN classificar o objeto da região!
 ![alt text](imgs/rcnn.png)
+
 Após isso vem o Fas RCNN que pega o modelo anterior e o treina em um único estágio ao invés de varios, fazendo o ROI pooling.
 ![alt text](imgs/fasrcnn.png)
+
 Após isso vem o Faster RCNN que remove a necessidade do Selective Search, o que aumenta o tempo de inferência. Introduz o **RPN** (Regional Proposal Network) que é um modelo baseado em atenção.
 ![alt text](imgs/faster_rcnn.png)
+
 Após isso vem o **FPN** (Feature Pyramid Network) que é um tipo de Inception Model, ele faz um downscale da imagem para embeddings de dimensões menores, depois faz o upscale novamente e com ele tenta fazer a previsão.
 ![alt text](imgs/fpn.png)
+
 **TODAS AS IMAGENS FORAM RETIRADAS DO HUGGING FACE**
 Agora podemos de fato falar do YOLO!
 YOLO é um detector de objetos em tempo real com uma única rede! Antes dele os modelos consistiam em classificadores de imagens que faziam em pedaços de uma imagem ao invés de toda ela. Isso fazia com que os pipelines fossem lentos, devido a quantidade de componentes individuais que precisam ser treinados.
@@ -137,7 +141,9 @@ As coordenadas são trazidas em 4 número (x, y , w, h) e x e y são as coordena
 
 Em questão da rede é uma simples rede conv inspirada no GoogLeNet que usa conv 1x1 para reduzir a profundida do feature map. A função de ativação é o LeakyReLU e para o layer final é o Linear
 ![alt text](imgs/yolo_arch.png)
+
 Por fim recebemos diversos bboxes e aplicamos um score para manter apenas aquelas com o maior nível de confiança! O processo do YOLO pode ser visto no GIF abaixo.
+
 ![alt text](imgs/object-detection-gif.gif)
 
 Por fim como estamos usando o YOLOv8 trouxe um resumo bem por cima das melhorias que foram ocorrendo até chegar nessa versão:
