@@ -1,7 +1,14 @@
 # FruitNinja AI
+English version: [README.en.md](README.en.md).
 
 Bot para **Fruit Ninja** treinado com poucas labels, baixo tempo de treinamento e alta precisão
 A proposta do projeto é ser **reprodutível** e **treinável**: você consegue treinar seu próprio detector, exportar para ONNX e plugar no loop de gameplay com configurações claras (limites de idade da detecção, intervalo mínimo de ações, raio de segurança das bombas, overshoot do corte, etc.).
+
+---
+
+O modelo inicial foi treinado com 70 imagens durante 50 épocas, o que levou um tempo de 01:30 minutos. Ele conseguia distinguir perfeitamente entre frutas e bombas, mas acabou gerando muitos falsos positivos para pedaços de frutas, o que acabava ocoupando a fila dos cortes e diminuindo a eficiência do bot. Além de ter de usar um nível de confiança mais baixo devido a algumas frutas rotacionarem e o modelo ficar mais "confuso", exemplo da banana!
+A segunda versão foi feita com 124 imagens e 80 épocas, o que possibilitou o aumento do grau de confiança e reduziu os casos de falso positivo, além de ter aprendido as rotações das frutas e até mesmo tendo generalizado para outros modos de jogos que continham as mesmas frutas mas com outras características (borda, efeitos, etc)
+O terceiro modelo foi feito com 190 imagens e 120 épocas, que levou cerca de 5 minutos, o que trouxe as mesmas melhorias vistas no segundo modelo mas com maior precisão.
 
 ---
 ## Principais Recursos
